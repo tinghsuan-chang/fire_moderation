@@ -3,6 +3,7 @@ library(sf)
 library(tidyverse)
 library(raster)
 library(terra)
+library(lubridate)
 
 # prepare MTBS and GlobFire data -------------------------------------
 # MTBS description:
@@ -170,14 +171,27 @@ topography_dat <- rbind(dat %>% filter(state == "CA"), dat %>% filter(state == "
 #saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
 
 # vegetation data ----------------------------------------------------------
-# event forest(%) shrubland(%) herb(%), other(%), tree canopy cover(mean)
-# landcover dataset https://www.mrlc.gov/data/legends/national-land-cover-database-class-legend-and-description
-# tcc: https://www.mrlc.gov/data/nlcd-2020-tree-canopy-cover-conus
+# landcover data source: https://www.mrlc.gov/data/legends/national-land-cover-database-class-legend-and-description
+# use the closest year when the fire year is not in the landcover data source
+landcover_years <- c(2006, 2008, 2011, 2013, 2016, 2019)
+fire_dat <- fire_dat %>%
+  mutate(landcover_yr = case_when(year(Ig_Date) %in% landcover_years ~ format(Ig_Date, "%Y"),
+                                  Ig_Date >= "2007-01-01" & Ig_Date <= "2007-06-30" ~ "2006",
+                                  Ig_Date >= "2007-07-01" & Ig_Date <= "2007-12-31" ~ "2008",
+                                  year(Ig_Date) == 2009 ~ "2008",
+                                  year(Ig_Date) == 2010 ~ "2011",
+                                  Ig_Date >= "2012-01-01" & Ig_Date <= "2012-06-30" ~ "2011",
+                                  Ig_Date >= "2012-07-01" & Ig_Date <= "2012-12-31" ~ "2013",
+                                  year(Ig_Date) == 2014 ~ "2013",
+                                  year(Ig_Date) == 2015 ~ "2016",
+                                  year(Ig_Date) == 2017 ~ "2016",
+                                  year(Ig_Date) == 2018 ~ "2019",
+                                  year(Ig_Date) == 2020 ~ "2019"))
 for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
-  land_rast <- terra::rast(file.path("raw_data/landcover/NLCD_landcover_2021_release_all_files_20230630",
+  land_rast <- terra::rast(file.path("raw_data/veg/NLCD_landcover_2021_release_all_files_20230630",
                                      paste0("nlcd_", year, "_land_cover_l48_20210604.img")))
   land_rast <- project(land_rast, llprj, method = "near")
-  d <- subset(fire_dat, format(fire_dat$Ig_Date, "%Y") == year)
+  d <- fire_dat %>% filter(landcover_yr == year)
   class_inboundaries <- terra::extract(land_rast, vect(d), na.rm = TRUE)
   class_pct_inboundaries <- class_inboundaries %>%
     group_by(ID) %>%
@@ -189,14 +203,14 @@ for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
     dplyr::select(Event_ID) %>%
     cbind(class_pct_inboundaries) %>%
     dplyr::select(!ID)
-  print(year)
-  saveRDS(d, file = paste0("processed_data/landcover_dat/", paste0("landcover", year), ".RDS"))
+  saveRDS(d, file = paste0("processed_data/veg_dat/", paste0("landcover_dat", year), ".RDS"))
 }
 
+# tree canopy cover: https://www.mrlc.gov/data/nlcd-all-tree-canopy-cover-conus
 
 
 # climate data ------------------------------------------------------------
-# event year mean_precip_over_pixels_on_ig_date, humid, wind direc, wind velocity, temp, pressure
+# event mean_precip_over_pixels_on_ig_date, humid, wind direc, wind velocity, temp, pressure
 # https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
 
 
