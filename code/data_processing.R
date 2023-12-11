@@ -21,7 +21,6 @@ mtbs_bab <- mtbs_bab_raw %>%
                                        !(Mod_T %in% c(-9999, 9999, -999, 999)) ~ "Moderate",
                                        !(Low_T %in% c(-9999, 9999, -999, 999)) ~ "Low",
                                        !(IncGreen_T %in% c(-9999, 9999, -999, 999)) ~ "Increased Greeness / Unchanged"))
-#prop.table(table(mtbs_bab$burn_severity_max)) # High 23.6%, Low 49.6, Mod 26.8%
 
 # globfire dataset of all fires that are able to link to smoke. 
 globfire_daily_raw <- readRDS("raw_data/globfire_link_dataset_Oct10_2023/daily_globfire_link.rds")
@@ -44,7 +43,7 @@ intersection <- st_intersection(mtbs_bab, globfire_poly) %>%
 fire_dat <- fire_dat %>%
   mutate(polygon_area = st_area(fire_dat),
          diff_time = abs(difftime(Ig_Date, IDate, units = "days"))) %>%
-  # treat spatially matched fires that happen within 30 days of each other as the same fire
+  # spatially matched fires must happen within 30 days of each other 
   filter(diff_time <= 30) %>%
   left_join(intersection, by = c("Event_ID", "Id")) %>%
   # calculate intersecting area / MTBS area
@@ -64,16 +63,14 @@ fire_dat <- fire_dat %>%
   filter(!(Event_ID %in% dup_remove_event_id))
 
 summary(fire_dat$intersect_pct) # Min. 0.078, 1st Qu. 39.35, Median 63.66, Mean 59.04, 3rd Qu. 80.8, Max. 98.6
-prop.table(table(fire_dat$burn_severity_max)) # High 39.3%, Low 38.0%, Mod 22.7%
 # keep matches with intersecting area > 39% 
 fire_dat <- fire_dat %>%
   filter(as.numeric(intersect_pct) > 39)
-prop.table(table(fire_dat$burn_severity_max)) # High 42.8%, Low 35.0%, Mod 22.1%
 #saveRDS(fire_dat, file = "processed_data/fire_dat.RDS")
 
 # burn severity ----------------------------------------------------------
-# function to get burn severity classes in the boundaries for each fire in a specific state and year
 #fire_dat <- readRDS(file = "processed_data/fire_dat.RDS")
+# function to get burn severity classes in the boundaries for each fire in a specific state and year
 get_value_inboundaries <- function(location, fire_year) {
   mtbs_rast <- terra::rast(file.path("raw_data",
                                      paste0("mtbs_", location),
@@ -170,8 +167,8 @@ topography_dat <- rbind(dat %>% filter(state == "CA"), dat %>% filter(state == "
   cbind(topography_grid_poly)
 #saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
 
-# vegetation data ----------------------------------------------------------
-# landcover data source: https://www.mrlc.gov/data/legends/national-land-cover-database-class-legend-and-description
+# landcover data ----------------------------------------------------------
+# data source: https://www.mrlc.gov/data/legends/national-land-cover-database-class-legend-and-description
 # use the closest year when the fire year is not in the landcover data source
 landcover_years <- c(2006, 2008, 2011, 2013, 2016, 2019)
 fire_dat <- fire_dat %>%
@@ -188,7 +185,7 @@ fire_dat <- fire_dat %>%
                                   year(Ig_Date) == 2018 ~ "2019",
                                   year(Ig_Date) == 2020 ~ "2019"))
 for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
-  land_rast <- terra::rast(file.path("raw_data/veg/NLCD_landcover_2021_release_all_files_20230630",
+  land_rast <- terra::rast(file.path("raw_data/landcover/NLCD_landcover_2021_release_all_files_20230630",
                                      paste0("nlcd_", year, "_land_cover_l48_20210604.img")))
   land_rast <- project(land_rast, llprj, method = "near")
   d <- fire_dat %>% filter(landcover_yr == year)
@@ -203,15 +200,39 @@ for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
     dplyr::select(Event_ID) %>%
     cbind(class_pct_inboundaries) %>%
     dplyr::select(!ID)
-  saveRDS(d, file = paste0("processed_data/veg_dat/", paste0("landcover_dat", year), ".RDS"))
+  saveRDS(d, file = paste0("processed_data/landcover_dat/", paste0("landcover_dat", year), ".RDS"))
 }
 
-# tree canopy cover: https://www.mrlc.gov/data/nlcd-all-tree-canopy-cover-conus
-
+# combine landcover data
+landcover_dat <- list.files( path = "processed_data/landcover_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
+  map_dfr(readRDS)
+#saveRDS(landcover_dat, file = "processed_data/landcover_dat.RDS")
 
 # climate data ------------------------------------------------------------
-# event mean_precip_over_pixels_on_ig_date, humid, wind direc, wind velocity, temp, pressure
-# https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
-
+# data source: https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
+# climate vars: precipitation, wind direc, wind veloc, pressure, min temp, max temp, min rel humidity, max rel humidity
+climate_vars <- c("pr", "th", "vs", "vpd", "tmmn", "tmmx", "rmin", "rmax") 
+d <- fire_dat %>% st_drop_geometry()
+sf_use_s2(FALSE)
+for (v in 1:len(climate_vars)) {
+  means <- c()
+  for (i in 1:nrow(d)) {
+    yr <- year(d[i,"Ig_Date"])
+    day_in_yr <- yday(d[i,"Ig_Date"])
+    stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
+    layer_climate <- data.frame(rasterToPoints((stack[[day_in_yr]])))
+    colnames(layer_climate)[1:3] <- c("LONGITUDE", "LATITUDE", climate_vars[v])
+    layer_climate <- st_as_sf(layer_climate,
+                              coords = c("LONGITUDE", "LATITUDE"),
+                              crs = 4326,
+                              remove = FALSE)
+    layer_climate_gridded <- st_drop_geometry(st_join(fire_dat[i,], layer_climate, join = st_intersects))
+    means <- c(means, mean(layer_climate_gridded[,climate_vars[v]], na.rm = TRUE))
+  }
+  d$v <- means
+  colnames(d)[ncol(d)] <- climate_vars[v]
+}
+climate_dat <- d[,c("Event_ID", climate_vars)]
+saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
 
 
