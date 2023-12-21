@@ -35,7 +35,7 @@ sf_use_s2(FALSE)
 fire_dat <- st_join(mtbs_bab, globfire_poly,
                     join = st_intersects,
                     largest = TRUE) 
-# calculate intersecting area
+# calculate overlapping area
 intersection <- st_intersection(mtbs_bab, globfire_poly) %>% 
   mutate(intersect_area = st_area(.)) %>%
   dplyr::select(Event_ID, Id, intersect_area) %>%
@@ -43,17 +43,17 @@ intersection <- st_intersection(mtbs_bab, globfire_poly) %>%
 fire_dat <- fire_dat %>%
   mutate(polygon_area = st_area(fire_dat),
          diff_time = abs(difftime(Ig_Date, IDate, units = "days"))) %>%
-  # spatially matched fires must happen within 30 days of each other 
+  # spatially matched fires must occur within 30 days of each other 
   filter(diff_time <= 30) %>%
   left_join(intersection, by = c("Event_ID", "Id")) %>%
-  # calculate intersecting area / MTBS area
+  # calculate overlapping area / MTBS area
   mutate(intersect_pct = intersect_area*100 / polygon_area)
 
-# non-unique matches
+# non-unique matches (move than 1 MTBS fire matched to the same GlobFire)
 dup <- fire_dat %>%
   filter(Id %in% fire_dat$Id[duplicated(fire_dat$Id)]) %>%
   arrange(Id, diff_time)
-# for non-unique matches, only keep the MTBS event whose Ig_Date is closest to the GlobFire IDate
+# for non-unique matches, only keep the MTBS fire whose Ig_Date is closest to the GlobFire IDate
 dup_closest <- dup %>%
   group_by(Id) %>%
   top_n(-1, diff_time) %>%
@@ -62,14 +62,14 @@ dup_remove_event_id <- dup$Event_ID[!(dup$Event_ID %in% dup_closest$Event_ID)]
 fire_dat <- fire_dat %>%
   filter(!(Event_ID %in% dup_remove_event_id))
 
-summary(fire_dat$intersect_pct) # Min. 0.078, 1st Qu. 39.35, Median 63.66, Mean 59.04, 3rd Qu. 80.8, Max. 98.6
-# keep matches with intersecting area > 39% 
+#summary(fire_dat$intersect_pct) # Min. 0.078, 1st Qu. 39.35, Median 63.66, Mean 59.04, 3rd Qu. 80.8, Max. 98.6
+# keep matches with overlapping area > 39% 
 fire_dat <- fire_dat %>%
   filter(as.numeric(intersect_pct) > 39)
-#saveRDS(fire_dat, file = "processed_data/fire_dat.RDS")
+saveRDS(fire_dat, file = "processed_data/fire_dat.RDS")
+fire_dat <- readRDS(file = "processed_data/fire_dat.RDS")
 
 # burn severity ----------------------------------------------------------
-#fire_dat <- readRDS(file = "processed_data/fire_dat.RDS")
 # function to get burn severity classes in the boundaries for each fire in a specific state and year
 get_value_inboundaries <- function(location, fire_year) {
   mtbs_rast <- terra::rast(file.path("raw_data",
@@ -107,12 +107,10 @@ for (location in c("CA", "FL", "GA")) {
     saveRDS(d, file = paste0("processed_data/burn_severity_dat/", location, fire_year, ".RDS"))
   }
 }
-
-# combine burn severity data
 burn_severity_dat <- list.files( path = "processed_data/burn_severity_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
   map_dfr(readRDS)
-#saveRDS(burn_severity_dat, file = "processed_data/burn_severity_dat.RDS")
-prop.table(table(burn_severity_dat$burn_severity_mode)) # Unburned-Low 3.5%, Low 76.5%, Mod 14.5%, High 3.1%, Missing 2.2%
+saveRDS(burn_severity_dat, file = "processed_data/burn_severity_dat.RDS")
+#prop.table(table(burn_severity_dat$burn_severity_mode)) # Unburned-Low 3.5%, Low 76.5%, Mod 14.5%, High 3.1%, Missing 2.2%
 
 # topography data --------------------------------------------------------
 # get state bounds
@@ -165,7 +163,7 @@ colnames(topography_grid_poly) <- c("elevation", "slope", "aspect_sin", "aspect_
 topography_dat <- rbind(dat %>% filter(state == "CA"), dat %>% filter(state == "FL"), dat %>% filter(state == "GA")) %>%
   dplyr::select(Event_ID) %>%
   cbind(topography_grid_poly)
-#saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
+saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
 
 # landcover data ----------------------------------------------------------
 # data source: https://www.mrlc.gov/data/legends/national-land-cover-database-class-legend-and-description
@@ -202,37 +200,56 @@ for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
     dplyr::select(!ID)
   saveRDS(d, file = paste0("processed_data/landcover_dat/", paste0("landcover_dat", year), ".RDS"))
 }
-
-# combine landcover data
 landcover_dat <- list.files( path = "processed_data/landcover_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
   map_dfr(readRDS)
-#saveRDS(landcover_dat, file = "processed_data/landcover_dat.RDS")
+saveRDS(landcover_dat, file = "processed_data/landcover_dat.RDS")
 
 # climate data ------------------------------------------------------------
 # data source: https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
 # climate vars: precipitation, wind direc, wind veloc, pressure, min temp, max temp, min rel humidity, max rel humidity
 climate_vars <- c("pr", "th", "vs", "vpd", "tmmn", "tmmx", "rmin", "rmax") 
-d <- fire_dat %>% st_drop_geometry()
+climate_dat <- fire_dat 
 sf_use_s2(FALSE)
-for (v in 1:len(climate_vars)) {
-  means <- c()
-  for (i in 1:nrow(d)) {
-    yr <- year(d[i,"Ig_Date"])
-    day_in_yr <- yday(d[i,"Ig_Date"])
+for (v in 1:length(climate_vars)) {
+  climate_dat_CA <- climate_dat %>% filter(state == "CA")
+  layer_climate_fire <- NULL
+  for (i in 1:nrow(climate_dat_CA)) {
+    yr <- year(st_drop_geometry(climate_dat_CA)[i,"Ig_Date"])
+    day_in_yr <- yday(st_drop_geometry(climate_dat_CA)[i,"Ig_Date"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
-    layer_climate <- data.frame(rasterToPoints((stack[[day_in_yr]])))
-    colnames(layer_climate)[1:3] <- c("LONGITUDE", "LATITUDE", climate_vars[v])
-    layer_climate <- st_as_sf(layer_climate,
-                              coords = c("LONGITUDE", "LATITUDE"),
-                              crs = 4326,
-                              remove = FALSE)
-    layer_climate_gridded <- st_drop_geometry(st_join(fire_dat[i,], layer_climate, join = st_intersects))
-    means <- c(means, mean(layer_climate_gridded[,climate_vars[v]], na.rm = TRUE))
+    stack_layer <- crop(stack[[day_in_yr]], extent(CA_bound))
+    layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
+    colnames(layer_climate)[1] <- climate_vars[v]
+    layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_CA[i,], layer_climate, join = st_intersects, largest = TRUE))
   }
-  d$v <- means
-  colnames(d)[ncol(d)] <- climate_vars[v]
+  climate_dat_CA <- layer_climate_fire
+  
+  climate_dat_FL <- climate_dat %>% filter(state == "FL")
+  layer_climate_fire <- NULL
+  for (i in 1:nrow(climate_dat_FL)) {
+    yr <- year(st_drop_geometry(climate_dat_FL)[i,"Ig_Date"])
+    day_in_yr <- yday(st_drop_geometry(climate_dat_FL)[i,"Ig_Date"])
+    stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
+    stack_layer <- crop(stack[[day_in_yr]], extent(FL_bound))
+    layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
+    colnames(layer_climate)[1] <- climate_vars[v]
+    layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_FL[i,], layer_climate, join = st_intersects, largest = TRUE))
+  }
+  climate_dat_FL <- layer_climate_fire
+  
+  climate_dat_GA <- climate_dat %>% filter(state == "GA")
+  layer_climate_fire <- NULL
+  for (i in 1:nrow(climate_dat_GA)) {
+    yr <- year(st_drop_geometry(climate_dat_GA)[i,"Ig_Date"])
+    day_in_yr <- yday(st_drop_geometry(climate_dat_GA)[i,"Ig_Date"])
+    stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
+    stack_layer <- crop(stack[[day_in_yr]], extent(GA_bound))
+    layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
+    colnames(layer_climate)[1] <- climate_vars[v]
+    layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_GA[i,], layer_climate, join = st_intersects, largest = TRUE))
+  }
+  climate_dat_GA <- layer_climate_fire
+  
+  climate_dat <- rbind(climate_dat_CA, climate_dat_FL, climate_dat_GA)
 }
-climate_dat <- d[,c("Event_ID", climate_vars)]
 saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
-
-
