@@ -4,6 +4,7 @@ library(tidyverse)
 library(raster)
 library(terra)
 library(lubridate)
+library(fst)
 
 # prepare MTBS and GlobFire data -------------------------------------
 # MTBS description:
@@ -49,7 +50,7 @@ fire_dat <- fire_dat %>%
   # calculate overlapping area / MTBS area
   mutate(intersect_pct = intersect_area*100 / polygon_area)
 
-# non-unique matches (move than 1 MTBS fire matched to the same GlobFire)
+# non-unique matches (multiple MTBS fires matched to the same GlobFire)
 dup <- fire_dat %>%
   filter(Id %in% fire_dat$Id[duplicated(fire_dat$Id)]) %>%
   arrange(Id, diff_time)
@@ -137,7 +138,7 @@ slope_grid_fl_poly <- raster::extract(crop(slope, extent(FL_bound)), fire_dat %>
 slope_grid_ga_poly <- raster::extract(crop(slope, extent(GA_bound)), fire_dat %>% filter(state == "GA"), 
                                       fun = mean, na.rm = TRUE)
 
-# aspect
+# aspect sine
 aspect_sin <- raster("raw_data/topography/aspectsine_1KMmd_GMTEDmd.tif")
 aspectsin_grid_ca_poly <- raster::extract(crop(aspect_sin, extent(CA_bound)), fire_dat %>% filter(state == "CA"), 
                                           fun = mean, na.rm = TRUE)
@@ -145,6 +146,8 @@ aspectsin_grid_fl_poly <- raster::extract(crop(aspect_sin, extent(FL_bound)), fi
                                           fun = mean, na.rm = TRUE)
 aspectsin_grid_ga_poly <- raster::extract(crop(aspect_sin, extent(GA_bound)), fire_dat %>% filter(state == "GA"), 
                                           fun = mean, na.rm = TRUE)
+
+# aspect cosine
 aspect_cos <- raster("raw_data/topography/aspectcosine_1KMmd_GMTEDmd.tif")
 aspectcos_grid_ca_poly <- raster::extract(crop(aspect_cos, extent(CA_bound)), fire_dat %>% filter(state == "CA"), 
                                           fun = mean, na.rm = TRUE)
@@ -166,7 +169,6 @@ topography_dat <- rbind(dat %>% filter(state == "CA"), dat %>% filter(state == "
 saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
 
 # landcover data ----------------------------------------------------------
-# data source: https://www.mrlc.gov/data/legends/national-land-cover-database-class-legend-and-description
 # use the closest year when the fire year is not in the landcover data source
 landcover_years <- c(2006, 2008, 2011, 2013, 2016, 2019)
 fire_dat <- fire_dat %>%
@@ -205,7 +207,6 @@ landcover_dat <- list.files( path = "processed_data/landcover_dat/", pattern = "
 saveRDS(landcover_dat, file = "processed_data/landcover_dat.RDS")
 
 # climate data ------------------------------------------------------------
-# data source: https://developers.google.com/earth-engine/datasets/catalog/IDAHO_EPSCOR_GRIDMET
 # climate vars: precipitation, wind direc, wind veloc, pressure, min temp, max temp, min rel humidity, max rel humidity
 climate_vars <- c("pr", "th", "vs", "vpd", "tmmn", "tmmx", "rmin", "rmax") 
 climate_dat <- fire_dat 
@@ -217,7 +218,7 @@ for (v in 1:length(climate_vars)) {
     yr <- year(st_drop_geometry(climate_dat_CA)[i,"Ig_Date"])
     day_in_yr <- yday(st_drop_geometry(climate_dat_CA)[i,"Ig_Date"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
-    stack_layer <- crop(stack[[day_in_yr]], extent(CA_bound))
+    stack_layer <- crop(stack[[day_in_yr - 1]], extent(CA_bound)) # take climate value from the day before
     layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
     colnames(layer_climate)[1] <- climate_vars[v]
     layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_CA[i,], layer_climate, join = st_intersects, largest = TRUE))
@@ -230,7 +231,7 @@ for (v in 1:length(climate_vars)) {
     yr <- year(st_drop_geometry(climate_dat_FL)[i,"Ig_Date"])
     day_in_yr <- yday(st_drop_geometry(climate_dat_FL)[i,"Ig_Date"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
-    stack_layer <- crop(stack[[day_in_yr]], extent(FL_bound))
+    stack_layer <- crop(stack[[day_in_yr - 1]], extent(FL_bound))
     layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
     colnames(layer_climate)[1] <- climate_vars[v]
     layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_FL[i,], layer_climate, join = st_intersects, largest = TRUE))
@@ -243,7 +244,7 @@ for (v in 1:length(climate_vars)) {
     yr <- year(st_drop_geometry(climate_dat_GA)[i,"Ig_Date"])
     day_in_yr <- yday(st_drop_geometry(climate_dat_GA)[i,"Ig_Date"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
-    stack_layer <- crop(stack[[day_in_yr]], extent(GA_bound))
+    stack_layer <- crop(stack[[day_in_yr - 1]], extent(GA_bound))
     layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
     colnames(layer_climate)[1] <- climate_vars[v]
     layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_GA[i,], layer_climate, join = st_intersects, largest = TRUE))
@@ -254,3 +255,5 @@ for (v in 1:length(climate_vars)) {
 }
 climate_dat <- climate_dat[,c("Event_ID", climate_vars)]
 saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
+
+# smoke severity  ------------------------------------------------------------
