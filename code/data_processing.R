@@ -255,5 +255,3 @@ for (v in 1:length(climate_vars)) {
 }
 climate_dat <- climate_dat[,c("Event_ID", climate_vars)]
 saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
-
-# smoke severity  ------------------------------------------------------------
