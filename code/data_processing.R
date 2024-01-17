@@ -169,21 +169,15 @@ topography_dat <- rbind(dat %>% filter(state == "CA"), dat %>% filter(state == "
 saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
 
 # landcover data ----------------------------------------------------------
-# use the closest year when the fire year is not in the landcover data source
-landcover_years <- c(2006, 2008, 2011, 2013, 2016, 2019)
+# data released in these years: 2006, 2008, 2011, 2013, 2016, 2019 
+# use the data from the closest release year 
 fire_dat <- fire_dat %>%
-  mutate(landcover_yr = case_when(year(Ig_Date) %in% landcover_years ~ format(Ig_Date, "%Y"),
-                                  Ig_Date >= "2007-01-01" & Ig_Date <= "2007-06-30" ~ "2006",
-                                  Ig_Date >= "2007-07-01" & Ig_Date <= "2007-12-31" ~ "2008",
-                                  year(Ig_Date) == 2009 ~ "2008",
-                                  year(Ig_Date) == 2010 ~ "2011",
-                                  Ig_Date >= "2012-01-01" & Ig_Date <= "2012-06-30" ~ "2011",
-                                  Ig_Date >= "2012-07-01" & Ig_Date <= "2012-12-31" ~ "2013",
-                                  year(Ig_Date) == 2014 ~ "2013",
-                                  year(Ig_Date) == 2015 ~ "2016",
-                                  year(Ig_Date) == 2017 ~ "2016",
-                                  year(Ig_Date) == 2018 ~ "2019",
-                                  year(Ig_Date) == 2020 ~ "2019"))
+  mutate(landcover_yr = case_when(Ig_Date >= "2006-01-01" & Ig_Date <= "2007-12-31" ~ "2006",
+                                  Ig_Date >= "2008-01-01" & Ig_Date <= "2010-12-31" ~ "2008",
+                                  Ig_Date >= "2011-01-01" & Ig_Date <= "2012-12-31" ~ "2011",
+                                  Ig_Date >= "2013-01-01" & Ig_Date <= "2015-12-31" ~ "2013",
+                                  Ig_Date >= "2016-01-01" & Ig_Date <= "2018-12-31" ~ "2016",
+                                  Ig_Date >= "2019-01-01" & Ig_Date <= "2020-12-31" ~ "2019"))
 for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
   land_rast <- terra::rast(file.path("raw_data/landcover/NLCD_landcover_2021_release_all_files_20230630",
                                      paste0("nlcd_", year, "_land_cover_l48_20210604.img")))
@@ -255,3 +249,15 @@ for (v in 1:length(climate_vars)) {
 }
 climate_dat <- climate_dat[,c("Event_ID", climate_vars)]
 saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
+
+# final data for causal analysis -------------------------------------
+fire_dat <- readRDS("processed_data/fire_dat.RDS")
+burn_severity_dat <- readRDS("processed_data/burn_severity_dat.RDS")
+topography_dat <- readRDS("processed_data/topography_dat.RDS")
+landcover_dat <- readRDS("processed_data/landcover_dat.RDS")
+climate_dat <- readRDS("processed_data/climate_dat.RDS")
+smoke_dat <- readRDS("processed_data/sorted_total_smokepm_dt.RDS")
+
+final_dat <- fire_dat %>%
+  select(c("Event_ID", "Incid_Type", "Ig_Date", "state", "Id")) %>%
+  left_join()
