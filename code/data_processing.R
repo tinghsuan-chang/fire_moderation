@@ -11,8 +11,8 @@ library(fst)
 # https://developers.google.com/earth-engine/datasets/catalog/USFS_GTAC_MTBS_burned_area_boundaries_v1
 
 # MTBS Burned Areas Boundaries Dataset
-mtbs_bab_raw <- st_read("raw_data/mtbs_perimeter_data/mtbs_perims_DD.shp")
 llprj <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"
+mtbs_bab_raw <- st_read("raw_data/mtbs_perimeter_data/mtbs_perims_DD.shp")
 mtbs_bab <- mtbs_bab_raw %>%
   st_transform(crs = llprj) %>%
   mutate(state = substr(Event_ID, 1, 2)) %>%
@@ -250,14 +250,23 @@ for (v in 1:length(climate_vars)) {
 climate_dat <- climate_dat[,c("Event_ID", climate_vars)]
 saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
 
-# final data for causal analysis -------------------------------------
-fire_dat <- readRDS("processed_data/fire_dat.RDS")
-burn_severity_dat <- readRDS("processed_data/burn_severity_dat.RDS")
-topography_dat <- readRDS("processed_data/topography_dat.RDS")
-landcover_dat <- readRDS("processed_data/landcover_dat.RDS")
-climate_dat <- readRDS("processed_data/climate_dat.RDS")
+# final data for causal analysis -----------------------------------------
+fire_dat <- readRDS("processed_data/fire_dat.RDS") %>% st_drop_geometry()
+burn_severity_dat <- readRDS("processed_data/burn_severity_dat.RDS") %>% st_drop_geometry()
+topography_dat <- readRDS("processed_data/topography_dat.RDS") %>% st_drop_geometry()
+landcover_dat <- readRDS("processed_data/landcover_dat.RDS") %>% st_drop_geometry()
+climate_dat <- readRDS("processed_data/climate_dat.RDS") %>% st_drop_geometry()
 smoke_dat <- readRDS("processed_data/sorted_total_smokepm_dt.RDS")
 
-final_dat <- fire_dat %>%
-  select(c("Event_ID", "Incid_Type", "Ig_Date", "state", "Id")) %>%
-  left_join()
+dat <- fire_dat %>% 
+  dplyr::select(c("Event_ID", "Incid_Type", "Ig_Date", "state", "Id")) %>%
+  rename(fire_type = Incid_Type,
+         ig_date = Ig_Date,
+         globfire_id = Id) %>%
+  mutate(globfire_id = as.character(globfire_id))
+dat <- purrr::reduce(list(dat, burn_severity_dat, topography_dat, landcover_dat, climate_dat), dplyr::left_join, by = "Event_ID") %>%
+  rename(mtbs_id = Event_ID) %>%
+  left_join(smoke_dat %>% dplyr::select(c(total_pop_smokePM, fire_id)), 
+            by = join_by(globfire_id == fire_id)) 
+sum(!is.na(dat$total_pop_smokePM)) # 825 obs have smoke outcome 
+saveRDS(dat, file = "processed_data/dat.RDS")
