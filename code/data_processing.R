@@ -111,7 +111,7 @@ for (location in c("CA", "FL", "GA")) {
 burn_severity_dat <- list.files( path = "processed_data/burn_severity_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
   map_dfr(readRDS)
 saveRDS(burn_severity_dat, file = "processed_data/burn_severity_dat.RDS")
-#prop.table(table(burn_severity_dat$burn_severity_mode)) # Unburned-Low 3.5%, Low 76.5%, Mod 14.5%, High 3.1%, Missing 2.2%
+#prop.table(table(burn_severity_dat$burn_severity_mode)) # Unburned-Low 3.5%, Low 76.5%, Mod 14.8%, High 3.1%, Missing 2.2%
 
 # topography data --------------------------------------------------------
 # get state bounds
@@ -200,7 +200,7 @@ landcover_dat <- list.files( path = "processed_data/landcover_dat/", pattern = "
   map_dfr(readRDS)
 saveRDS(landcover_dat, file = "processed_data/landcover_dat.RDS")
 
-# climate data ------------------------------------------------------------
+# climate data (pre-treat) ----------------------------------------------------------
 # climate vars: precipitation, wind direc, wind veloc, pressure, min temp, max temp, min rel humidity, max rel humidity
 climate_vars <- c("pr", "th", "vs", "vpd", "tmmn", "tmmx", "rmin", "rmax") 
 climate_dat <- fire_dat 
@@ -209,10 +209,10 @@ for (v in 1:length(climate_vars)) {
   climate_dat_CA <- climate_dat %>% filter(state == "CA")
   layer_climate_fire <- NULL
   for (i in 1:nrow(climate_dat_CA)) {
-    yr <- year(st_drop_geometry(climate_dat_CA)[i,"Ig_Date"])
-    day_in_yr <- yday(st_drop_geometry(climate_dat_CA)[i,"Ig_Date"])
+    yr <- year(st_drop_geometry(climate_dat_CA)[i,"IDate"])
+    day_in_yr <- yday(st_drop_geometry(climate_dat_CA)[i,"IDate"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
-    stack_layer <- crop(stack[[day_in_yr - 1]], extent(CA_bound)) # take climate value from the day before
+    stack_layer <- crop(stack[[day_in_yr - 1]], extent(CA_bound)) # take climate value from the day before IDate
     layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
     colnames(layer_climate)[1] <- climate_vars[v]
     layer_climate_fire <- rbind(layer_climate_fire, st_join(climate_dat_CA[i,], layer_climate, join = st_intersects, largest = TRUE))
@@ -222,8 +222,8 @@ for (v in 1:length(climate_vars)) {
   climate_dat_FL <- climate_dat %>% filter(state == "FL")
   layer_climate_fire <- NULL
   for (i in 1:nrow(climate_dat_FL)) {
-    yr <- year(st_drop_geometry(climate_dat_FL)[i,"Ig_Date"])
-    day_in_yr <- yday(st_drop_geometry(climate_dat_FL)[i,"Ig_Date"])
+    yr <- year(st_drop_geometry(climate_dat_FL)[i,"IDate"])
+    day_in_yr <- yday(st_drop_geometry(climate_dat_FL)[i,"IDate"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
     stack_layer <- crop(stack[[day_in_yr - 1]], extent(FL_bound))
     layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
@@ -235,8 +235,8 @@ for (v in 1:length(climate_vars)) {
   climate_dat_GA <- climate_dat %>% filter(state == "GA")
   layer_climate_fire <- NULL
   for (i in 1:nrow(climate_dat_GA)) {
-    yr <- year(st_drop_geometry(climate_dat_GA)[i,"Ig_Date"])
-    day_in_yr <- yday(st_drop_geometry(climate_dat_GA)[i,"Ig_Date"])
+    yr <- year(st_drop_geometry(climate_dat_GA)[i,"IDate"])
+    day_in_yr <- yday(st_drop_geometry(climate_dat_GA)[i,"IDate"])
     stack <- stack(paste0("raw_data/climate/", climate_vars[v], "_", as.character(yr), ".nc"))
     stack_layer <- crop(stack[[day_in_yr - 1]], extent(GA_bound))
     layer_climate <- st_as_sf( rasterToPolygons(stack_layer) )
@@ -248,18 +248,18 @@ for (v in 1:length(climate_vars)) {
   climate_dat <- rbind(climate_dat_CA, climate_dat_FL, climate_dat_GA)
 }
 climate_dat <- climate_dat[,c("Event_ID", climate_vars)]
-saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
+saveRDS(climate_dat, file = "processed_data/climate_dat_glob.RDS")
 
 # final data for causal analysis -----------------------------------------
 fire_dat <- readRDS("processed_data/fire_dat.RDS") %>% st_drop_geometry()
 burn_severity_dat <- readRDS("processed_data/burn_severity_dat.RDS") %>% st_drop_geometry()
 topography_dat <- readRDS("processed_data/topography_dat.RDS") %>% st_drop_geometry()
 landcover_dat <- readRDS("processed_data/landcover_dat.RDS") %>% st_drop_geometry()
-climate_dat <- readRDS("processed_data/climate_dat.RDS") %>% st_drop_geometry()
+climate_dat <- readRDS("processed_data/climate_dat_glob.RDS") %>% st_drop_geometry()
 smoke_dat <- readRDS("processed_data/sorted_total_smokepm_dt.RDS")
 
 dat <- fire_dat %>% 
-  dplyr::select(c("Event_ID", "Incid_Type", "Ig_Date", "state", "Id")) %>%
+  dplyr::select(c("Event_ID", "Incid_Type", "Ig_Date", "state", "Id", "IDate", "FDate")) %>%
   rename(fire_type = Incid_Type,
          ig_date = Ig_Date,
          globfire_id = Id) %>%
