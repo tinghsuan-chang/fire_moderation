@@ -111,7 +111,7 @@ for (location in c("CA", "FL", "GA")) {
 burn_severity_dat <- list.files( path = "processed_data/burn_severity_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
   map_dfr(readRDS)
 saveRDS(burn_severity_dat, file = "processed_data/burn_severity_dat.RDS")
-#prop.table(table(burn_severity_dat$burn_severity_mode)) # Unburned-Low 3.5%, Low 76.5%, Mod 14.8%, High 3.1%, Missing 2.2%
+#prop.table(table(burn_severity_dat$burn_severity_mode)) # Unburned-Low (1) 3.5%, Low (2) 76.5%, Mod (3) 14.8%, High (4) 3.1%, Missing (6) 2.2%
 
 # topography data --------------------------------------------------------
 # get state bounds
