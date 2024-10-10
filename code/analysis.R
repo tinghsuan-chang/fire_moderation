@@ -66,23 +66,11 @@ label(df$`forest coverage`) <- "Forest coverage (%)"
 label(df$`shrubland coverage`) <- "Shrubland coverage (%)"
 label(df$`herbaceous coverage`) <- "Herbaceous coverage (%)"
 
-# Standardize covariates (polygon area, burn severity, topography, land cover, climate)
-standardize <- function(x){
-  (x - mean(x))/sd(x)
-}
-df_all <- df %>%
-  mutate(across(colnames(df)[8:25], standardize))
-
-# Convert smoke severity to log(y+1)
-log_smoke <- function(y){
-  log(y+1)
-}
-df_all <- df_all %>%
-  mutate(across(colnames(df_all[grepl("smoke", colnames(df_all))]), log_smoke))
-
-# Duplicate data --> set fire = 0 and smoke severity = 0 in copy
-df_all <- rbind(df_all, df_all) 
+# Duplicate data --> set fire = 0, polygon area = 0, burn severity = 1, smoke severity = 0 in copy
+df_all <- rbind(df, df) 
 df_all[1:(nrow(df_all)/2),]$fire <- rep(0, nrow(df_all)/2)
+df_all[1:(nrow(df_all)/2),]$polygon_area <- rep(df$polygon_area[1]-df$polygon_area[1], nrow(df_all)/2)
+df_all[1:(nrow(df_all)/2),]$`burn severity` <- rep(1, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$total_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$total_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$daily_pop_smokePM <- rep(0, nrow(df_all)/2)
@@ -90,6 +78,20 @@ df_all[1:(nrow(df_all)/2),]$km2_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_smokePM <- rep(0, nrow(df_all)/2)
 df_pres <- df_all %>% filter(fire_type == "Prescribed Fire")
 df_wild <- df_all %>% filter(fire_type == "Wildfire")
+
+# Standardize covariates (polygon area, burn severity, topography, land cover, climate)
+standardize <- function(x){
+  (x - mean(x))/sd(x)
+}
+df_all <- df_all %>%
+  mutate(across(colnames(df_all)[8:25], standardize))
+
+# Convert smoke severity to log(y+1)
+log_smoke <- function(y){
+  log(y+1)
+}
+df_all <- df_all %>%
+  mutate(across(colnames(df_all[grepl("smoke", colnames(df_all))]), log_smoke))
 
 
 # Exploratory analyses ------------------------------------------------------------------
@@ -376,16 +378,16 @@ V_pres[,18] <- 1
 V_wild[,18] <- 0
 pred_pres <- predict(all_km2_pop$cf, V_pres, estimate.variance = TRUE)
 pred_wild <- predict(all_km2_pop$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) # 1,621
+(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
 ((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) # (-245249, 248490)
+  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
 
-# E[Y|pres, rmin = pres median, others = overall median] - E[Y|wild, rmin = wild median, others = overall median]
-V_pres[,16] <- median(df_pres$`min. relative humidity`)
-V_wild[,16] <- median(df_wild$`min. relative humidity`)
+# E[Y|pres, forest = pres median, others = overall median] - E[Y|wild, forest = wild median, others = overall median]
+V_pres[,6] <- median(df_pres$`forest coverage`)
+V_wild[,6] <- median(df_wild$`forest coverage`)
 pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
 pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) # -33,358
+(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
 ((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) # (-636,593, 569,877)
+  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
 
