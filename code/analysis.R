@@ -66,32 +66,25 @@ label(df$`forest coverage`) <- "Forest coverage (%)"
 label(df$`shrubland coverage`) <- "Shrubland coverage (%)"
 label(df$`herbaceous coverage`) <- "Herbaceous coverage (%)"
 
-# Duplicate data --> set fire = 0, polygon area = 0, burn severity = 1, smoke severity = 0 in copy
+# Duplicate data --> set fire = 0, smoke severity = 0 in duplicate
 df_all <- rbind(df, df) 
 df_all[1:(nrow(df_all)/2),]$fire <- rep(0, nrow(df_all)/2)
-df_all[1:(nrow(df_all)/2),]$polygon_area <- rep(df$polygon_area[1]-df$polygon_area[1], nrow(df_all)/2)
-df_all[1:(nrow(df_all)/2),]$`burn severity` <- rep(1, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$total_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$total_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$daily_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_smokePM <- rep(0, nrow(df_all)/2)
+
+# Log transform smoke severity: log(y+1)
+df_all <- df_all %>%
+  mutate(log_total_pop = log(total_pop_smokePM + 1),
+         log_total = log(total_smokePM + 1),
+         log_daily_pop = log(daily_pop_smokePM + 1),
+         log_km2_pop = log(km2_pop_smokePM + 1),
+         log_km2 = log(km2_smokePM + 1))
+
 df_pres <- df_all %>% filter(fire_type == "Prescribed Fire")
 df_wild <- df_all %>% filter(fire_type == "Wildfire")
-
-# Standardize covariates (polygon area, burn severity, topography, land cover, climate)
-standardize <- function(x){
-  (x - mean(x))/sd(x)
-}
-df_all <- df_all %>%
-  mutate(across(colnames(df_all)[8:25], standardize))
-
-# Convert smoke severity to log(y+1)
-log_smoke <- function(y){
-  log(y+1)
-}
-df_all <- df_all %>%
-  mutate(across(colnames(df_all[grepl("smoke", colnames(df_all))]), log_smoke))
 
 
 # Exploratory analyses ------------------------------------------------------------------
@@ -186,26 +179,25 @@ confounders <- c("elevation", "slope", "aspect sine", "aspect cosine",
                  "precipitation", "wind direction", "wind velocity", "vapor pressure deficit", "min. temperature", "max. temperature", "min. relative humidity", "max. relative humidity")
 cf_func <- function(df, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"), target = c("all", "treated", "overlap"), ps = NA, clus = "Y") {
   if (outcome == "total_pop") {
-    Y <- df$total_pop_smokePM 
+    Y <- df$log_total_pop 
   } else if (outcome == "daily_pop") {
-    Y <- df$daily_pop_smokePM 
+    Y <- df$log_daily_pop 
   } else if (outcome == "km2_pop") {
-    Y <- df$km2_pop_smokePM 
+    Y <- df$log_km2_pop
   } else if (outcome == "km2") {
-    Y <- df$km2_smokePM
+    Y <- df$log_km2
   }
   A <- df$fire # "treatment": fire indicator (denoted as T in manuscript)
   X <- df[,confounders] 
-  V <- df[,c("burn severity", confounders, "fire_type_bin")] 
+  V <- df[,c("burn severity", confounders)] 
   V_names <- colnames(V)
-  y_predictors <- df[,c("polygon_area", "burn severity", confounders, "fire_type_bin")]
   state <- df$state_num
   
   # Estimate expected outcome model m(v) = E[Y|polygon area, V]
   if (clus == "Y") {
-    Y.forest <- regression_forest(y_predictors, Y, clusters = state)
+    Y.forest <- regression_forest(V, Y, clusters = state)
   } else {
-    Y.forest <- regression_forest(y_predictors, Y)
+    Y.forest <- regression_forest(V, Y)
   }
   Y.hat <- predict(Y.forest)$predictions
   
@@ -236,16 +228,14 @@ cf_func <- function(df, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"),
               var_imp = varimp, 
               ate = ate))
 }
-set.seed(1); all_km2_pop <- cf_func(df_all, outcome = "km2_pop", target = "all")
-set.seed(1); all_km2 <- cf_func(df_all, outcome = "km2", target = "all")
 
 # Prescribed fire causal forest
-set.seed(1); pres_km2_pop <- cf_func(df_pres, outcome = "km2_pop", target = "all")
-set.seed(1); pres_km2 <- cf_func(df_pres, outcome = "km2", target = "all")
+set.seed(1); pres_km2_pop <- cf_func(df_pres, outcome = "km2_pop", target = "treated")
+set.seed(1); pres_km2 <- cf_func(df_pres, outcome = "km2", target = "treated")
 
 # Wildfire causal forest
-set.seed(1); wild_km2_pop <- cf_func(df_wild, outcome = "km2_pop", target = "all")
-set.seed(1); wild_km2 <- cf_func(df_wild, outcome = "km2", target = "all")
+set.seed(1); wild_km2_pop <- cf_func(df_wild, outcome = "km2_pop", target = "treated")
+set.seed(1); wild_km2 <- cf_func(df_wild, outcome = "km2", target = "treated")
 
 
 # Variable importance -------------------------------------------------------------------
@@ -329,10 +319,10 @@ rate <- function(data, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"), 
 
 
 # Prescribed fires (FL)
-pres_km2pop_AUTOC1 <- rate(data = df_pres, target = "all", outcome = "km2_pop", forest = pres_km2_pop, var_rank = 1, sta = "FL") 
-pres_km2pop_AUTOC2 <- rate(data = df_pres, target = "all", outcome = "km2_pop", forest = pres_km2_pop, var_rank = 2, sta = "FL") 
-pres_km2_AUTOC1 <- rate(data = df_pres, target = "all", outcome = "km2", forest = pres_km2, var_rank = 1, sta = "FL") 
-pres_km2_AUTOC2 <- rate(data = df_pres, target = "all", outcome = "km2", forest = pres_km2, var_rank = 2, sta = "FL") 
+pres_km2pop_AUTOC1 <- rate(data = df_pres, target = "treated", outcome = "km2_pop", forest = pres_km2_pop, var_rank = 1, sta = "FL") 
+pres_km2pop_AUTOC2 <- rate(data = df_pres, target = "treated", outcome = "km2_pop", forest = pres_km2_pop, var_rank = 2, sta = "FL") 
+pres_km2_AUTOC1 <- rate(data = df_pres, target = "treated", outcome = "km2", forest = pres_km2, var_rank = 1, sta = "FL") 
+pres_km2_AUTOC2 <- rate(data = df_pres, target = "treated", outcome = "km2", forest = pres_km2, var_rank = 2, sta = "FL") 
 pdf("figures/TOC_plots/FL_pres.pdf", width = 8, height = 8, pointsize = 11)
   par(mfrow = c(2,2))
   plot(pres_km2pop_AUTOC1, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(person ", mu*g/m^3, ")")), main = "TOC evaluated on min. relative humidity")
@@ -350,10 +340,10 @@ pdf("figures/TOC_plots/FL_pres.pdf", width = 8, height = 8, pointsize = 11)
 dev.off()
 
 # Wildfires (FL)
-wild_km2pop_AUTOC1 <- rate(data = df_wild, target = "all", outcome = "km2_pop", forest = wild_km2_pop, var_rank = 1, sta = "FL") 
-wild_km2pop_AUTOC2 <- rate(data = df_wild, target = "all", outcome = "km2_pop", forest = wild_km2_pop, var_rank = 2, sta = "FL") 
-wild_km2_AUTOC1 <- rate(data = df_wild, target = "all", outcome = "km2", forest = wild_km2, var_rank = 1, sta = "FL") 
-wild_km2_AUTOC2 <- rate(data = df_wild, target = "all", outcome = "km2", forest = wild_km2, var_rank = 2, sta = "FL") 
+wild_km2pop_AUTOC1 <- rate(data = df_wild, target = "treated", outcome = "km2_pop", forest = wild_km2_pop, var_rank = 1, sta = "FL") 
+wild_km2pop_AUTOC2 <- rate(data = df_wild, target = "treated", outcome = "km2_pop", forest = wild_km2_pop, var_rank = 2, sta = "FL") 
+wild_km2_AUTOC1 <- rate(data = df_wild, target = "treated", outcome = "km2", forest = wild_km2, var_rank = 1, sta = "FL") 
+wild_km2_AUTOC2 <- rate(data = df_wild, target = "treated", outcome = "km2", forest = wild_km2, var_rank = 2, sta = "FL") 
 pdf("figures/TOC_plots/FL_wild.pdf", width = 8, height = 8, pointsize = 11)
   par(mfrow = c(2,2))
   plot(wild_km2pop_AUTOC1, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(person ", mu*g/m^3, ")")), main = "TOC evaluated on forest coverage")
@@ -373,21 +363,18 @@ dev.off()
 
 # Comparisons between prescribed and wildfires -----------------------------------------------
 # E[Y|pres, V = overall median] - E[Y|wild, V = overall median]
-V_pres <- V_wild <- matrix(apply(df_all[,c("burn severity", confounders, "fire_type_bin")], 2, median), nrow = 1)
-V_pres[,18] <- 1
-V_wild[,18] <- 0
-pred_pres <- predict(all_km2_pop$cf, V_pres, estimate.variance = TRUE)
-pred_wild <- predict(all_km2_pop$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
-((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
-
-# E[Y|pres, forest = pres median, others = overall median] - E[Y|wild, forest = wild median, others = overall median]
-V_pres[,6] <- median(df_pres$`forest coverage`)
-V_wild[,6] <- median(df_wild$`forest coverage`)
+V_pres <- V_wild <- matrix(apply(df_all[df_all$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
 pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
 pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
 (exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
 ((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
   c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
 
+# E[Y|pres, V = pres median] - E[Y|wild, V = wild median]
+V_pres <- matrix(apply(df_pres[df_pres$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
+V_wild <- matrix(apply(df_wild[df_wild$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
+pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
+pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
+(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
+((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
+  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
