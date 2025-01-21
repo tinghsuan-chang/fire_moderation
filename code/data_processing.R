@@ -59,8 +59,8 @@ fire_dat_uniq <- fire_dat %>%
 # Keep matches with overlapping percentage > 1st Qu. 
 fire_dat_uniq <- fire_dat_uniq %>%
   filter(as.numeric(intersect_pct) > as.numeric(quantile(fire_dat_uniq$intersect_pct)[2]))
-saveRDS(fire_dat_uniq, file = "processed_data_all/fire_dat.RDS")
-fire_dat <- readRDS(file = "processed_data_all/fire_dat.RDS")
+saveRDS(fire_dat_uniq, file = "processed_data/fire_dat.RDS")
+fire_dat <- readRDS(file = "processed_data/fire_dat.RDS")
 
 
 # Burn severity ----------------------------------------------------------
@@ -99,13 +99,13 @@ for (location in c("CA", "FL", "GA")) {
       rename(burn_severity_mode = mode) %>%
       dplyr::select(!ID)
     print(paste0(location, fire_year))
-    saveRDS(d, file = paste0("processed_data_all/burn_severity_dat/", location, fire_year, ".RDS"))
+    saveRDS(d, file = paste0("processed_data/burn_severity_dat/", location, fire_year, ".RDS"))
   }
 }
-burn_severity_dat <- list.files( path = "processed_data_all/burn_severity_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
+burn_severity_dat <- list.files( path = "processed_data/burn_severity_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
   map_dfr(readRDS)
-saveRDS(burn_severity_dat, file = "processed_data_all/burn_severity_dat.RDS")
-unlink("processed_data_all/burn_severity_dat", recursive = TRUE)
+saveRDS(burn_severity_dat, file = "processed_data/burn_severity_dat.RDS")
+unlink("processed_data/burn_severity_dat", recursive = TRUE)
 #prop.table(table(burn_severity_dat$burn_severity_mode)) 
 
 # Topography data --------------------------------------------------------
@@ -161,7 +161,7 @@ colnames(topography_grid_poly) <- c("elevation", "slope", "aspect_sin", "aspect_
 topography_dat <- rbind(fire_dat %>% filter(state == "CA"), fire_dat %>% filter(state == "FL"), fire_dat %>% filter(state == "GA")) %>%
   dplyr::select(Event_ID) %>%
   cbind(topography_grid_poly)
-saveRDS(topography_dat, file = "processed_data_all/topography_dat.RDS")
+saveRDS(topography_dat, file = "processed_data/topography_dat.RDS")
 
 # Landcover data ----------------------------------------------------------
 # Data released in these years: 2006, 2008, 2011, 2013, 2016, 2019 
@@ -189,12 +189,12 @@ for (year in as.character(c(2006, 2008, 2011, 2013, 2016, 2019))) {
     dplyr::select(Event_ID) %>%
     cbind(class_pct_inboundaries) %>%
     dplyr::select(!ID)
-  saveRDS(d, file = paste0("processed_data_all/landcover_dat/", paste0("landcover_dat", year), ".RDS"))
+  saveRDS(d, file = paste0("processed_data/landcover_dat/", paste0("landcover_dat", year), ".RDS"))
 }
-landcover_dat <- list.files( path = "processed_data_all/landcover_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
+landcover_dat <- list.files( path = "processed_data/landcover_dat/", pattern = "*.RDS", full.names = TRUE ) %>%
   map_dfr(readRDS)
-saveRDS(landcover_dat, file = "processed_data_all/landcover_dat.RDS")
-unlink("processed_data_all/landcover_dat", recursive = TRUE)
+saveRDS(landcover_dat, file = "processed_data/landcover_dat.RDS")
+unlink("processed_data/landcover_dat", recursive = TRUE)
 
 # Climate data (pre-fire) ----------------------------------------------------------
 # Climate vars: precipitation, wind direc, wind veloc, pressure, min temp, max temp, min rel humidity, max rel humidity
@@ -244,15 +244,15 @@ for (v in 1:length(climate_vars)) {
   climate_dat <- rbind(climate_dat_CA, climate_dat_FL, climate_dat_GA)
 }
 climate_dat <- climate_dat[,c("Event_ID", climate_vars)]
-saveRDS(climate_dat, file = "processed_data_all/climate_dat.RDS")
+saveRDS(climate_dat, file = "processed_data/climate_dat.RDS")
 
 # Final data for causal analysis -----------------------------------------
-fire_dat <- readRDS("processed_data_all/fire_dat.RDS") %>% st_drop_geometry()
-burn_severity_dat <- readRDS("processed_data_all/burn_severity_dat.RDS") %>% st_drop_geometry()
-topography_dat <- readRDS("processed_data_all/topography_dat.RDS") %>% st_drop_geometry()
-landcover_dat <- readRDS("processed_data_all/landcover_dat.RDS") %>% st_drop_geometry()
-climate_dat <- readRDS("processed_data_all/climate_dat.RDS") %>% st_drop_geometry()
-smoke_dat <- readRDS("processed_data_all/sorted_total_smokepm_dt.RDS")
+fire_dat <- readRDS("processed_data/fire_dat.RDS") %>% st_drop_geometry()
+burn_severity_dat <- readRDS("processed_data/burn_severity_dat.RDS") %>% st_drop_geometry()
+topography_dat <- readRDS("processed_data/topography_dat.RDS") %>% st_drop_geometry()
+landcover_dat <- readRDS("processed_data/landcover_dat.RDS") %>% st_drop_geometry()
+climate_dat <- readRDS("processed_data/climate_dat.RDS") %>% st_drop_geometry()
+smoke_dat <- readRDS("processed_data/sorted_total_smokepm_dt.RDS")
 
 dat <- fire_dat %>% 
   dplyr::select(c("Event_ID", "Incid_Type", "Ig_Date", "state", "Id", "IDate", "FDate", "polygon_area")) %>%
@@ -265,4 +265,4 @@ dat <- purrr::reduce(list(dat, burn_severity_dat, topography_dat, landcover_dat,
   left_join(smoke_dat %>% dplyr::select(c(total_pop_smokePM, total_smokePM, fire_id)), 
             by = join_by(globfire_id == fire_id)) 
 sum(!is.na(dat$total_pop_smokePM)) # 1369/2191 obs have smoke outcome 
-saveRDS(dat, file = "processed_data_all/dat.RDS")
+saveRDS(dat, file = "processed_data/dat.RDS")
