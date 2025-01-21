@@ -196,7 +196,7 @@ landcover_dat <- list.files( path = "processed_data_all/landcover_dat/", pattern
 saveRDS(landcover_dat, file = "processed_data_all/landcover_dat.RDS")
 unlink("processed_data_all/landcover_dat", recursive = TRUE)
 
-# Climate data (pre-treat) ----------------------------------------------------------
+# Climate data (pre-fire) ----------------------------------------------------------
 # Climate vars: precipitation, wind direc, wind veloc, pressure, min temp, max temp, min rel humidity, max rel humidity
 climate_vars <- c("pr", "th", "vs", "vpd", "tmmn", "tmmx", "rmin", "rmax") 
 climate_dat <- fire_dat 
