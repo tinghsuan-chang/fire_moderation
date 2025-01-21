@@ -15,13 +15,9 @@ df <- dat %>%
     fire_type == "Wildfire" ~ 0,
     fire_type == "Unknown" ~ NA
   )) %>% 
-  # fire indicator (1: fire, 0: no fire)
-  mutate(fire = 1) %>% 
-  mutate(state_num = case_when(
-    state == "CA" ~ 1,
-    state == "FL" ~ 2,
-    state == "GA" ~ 3
-  )) %>%
+  mutate(fire = 1) %>% # fire indicator (1: fire, 0: no fire)
+  mutate(yr = lubridate::year(ig_date)) %>%
+  mutate(state_yr = as.factor(paste0(state, yr))) %>%
   mutate(duration = FDate - IDate) %>%
   mutate(daily_pop_smokePM = total_pop_smokePM / as.numeric(duration),
          km2_pop_smokePM = total_pop_smokePM / (as.numeric(polygon_area)/(10^6)),
@@ -37,7 +33,7 @@ df <- dat %>%
          `forest coverage` = forest,
          `shrubland coverage` = shrubland,
          `herbaceous coverage` = herb,
-         `other landcover` = other,
+         `other land cover` = other,
          `precipitation` = pr,
          `wind direction` = th,
          `wind velocity` = vs,
@@ -66,7 +62,7 @@ label(df$`forest coverage`) <- "Forest coverage (%)"
 label(df$`shrubland coverage`) <- "Shrubland coverage (%)"
 label(df$`herbaceous coverage`) <- "Herbaceous coverage (%)"
 
-# Duplicate data --> set fire = 0, smoke severity = 0 in duplicate
+# Duplicate data --> set fire = 0, smoke exposure = 0 in duplicate
 df_all <- rbind(df, df) 
 df_all[1:(nrow(df_all)/2),]$fire <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$total_pop_smokePM <- rep(0, nrow(df_all)/2)
@@ -75,7 +71,7 @@ df_all[1:(nrow(df_all)/2),]$daily_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_smokePM <- rep(0, nrow(df_all)/2)
 
-# Log transform smoke severity: log(y+1)
+# Log transform smoke exposure: log(y+1)
 df_all <- df_all %>%
   mutate(log_total_pop = log(total_pop_smokePM + 1),
          log_total = log(total_smokePM + 1),
@@ -86,11 +82,15 @@ df_all <- df_all %>%
 df_pres <- df_all %>% filter(fire_type == "Prescribed Fire")
 df_wild <- df_all %>% filter(fire_type == "Wildfire")
 
+topography <- c("elevation", "slope", "aspect sine", "aspect cosine")
+landcover <- c("forest coverage", "shrubland coverage", "herbaceous coverage", "other land cover")
+climate <- c("precipitation", "wind direction", "wind velocity", "vapor pressure deficit", "min. temperature", "max. temperature", "min. relative humidity", "max. relative humidity")
+confounders <- c(topography, landcover, climate)
 
 # Exploratory analyses ------------------------------------------------------------------
 # CA, FL and GA sample size by fire type
-table(df[df$state == "CA",]$fire_type) # pres: 4, wild: 475
-table(df[df$state == "FL",]$fire_type) # pres: 544, wild: 139
+table(df[df$state == "CA",]$fire_type) # pres: 4, wild: 481
+table(df[df$state == "FL",]$fire_type) # pres: 551, wild: 142
 table(df[df$state == "GA",]$fire_type) # pres: 24, wild: 27
 
 # CA, FL and GA maps showing fire boundaries and sample size by fire type
@@ -144,8 +144,12 @@ GA_map <- ggplot() +
 state_map <- CA_map + FL_map + GA_map
 ggsave("figures/state_map.pdf", state_map, width = 18, height = 13, units = "cm")
 
-# Duration by fire type
+# Number of fire events in each state-year
+print(xtable::xtable(cbind(table(df_pres$state_yr), table(df_wild$state_yr)), type = "latex"), file = "tables/clusters.tex") # need to make some tweaks to .tex to make it look better 
+
+# Duration by fire type 
 df %>%
+  mutate(duration = ifelse(duration == 0, 1, duration)) %>%
   group_by(fire_type) %>%
   summarise(mean_days = mean(duration),
             med_days = median(duration),
@@ -160,11 +164,11 @@ df %>%
             min_area = min(polygon_area)/10^6,
             max_area = max(polygon_area)/10^6)
 
-# Topography, climate and landcover characteristics, and per km^2 smoke severity by fire type
-tab1 <- table1(~ elevation + slope + `aspect sine` + `aspect cosine` + 
+# Topography, climate and land cover variables by fire type
+base <- table1(~ elevation + slope + `aspect sine` + `aspect cosine` + 
                  `precipitation` + `wind direction` + `wind velocity` + `vapor pressure deficit` + `min. temperature` + `max. temperature` + `min. relative humidity` + `max. relative humidity` +  
-                 `forest coverage` + `shrubland coverage` + `herbaceous coverage` + km2_pop_smokePM + km2_smokePM| fire_type, data = df)
-writeLines(t1kable(tab1, format = "latex"), "tables/tab1.tex") # need to make some tweaks to .tex to make it look better 
+                 `forest coverage` + `shrubland coverage` + `herbaceous coverage`| fire_type, data = df)
+writeLines(t1kable(base, format = "latex"), "tables/base.tex") # need to make some tweaks to .tex to make it look better 
 
 # Burn severity by fire type
 df %>%
@@ -174,28 +178,25 @@ df %>%
 
 
 # Causal forest -------------------------------------------------------------------------
-confounders <- c("elevation", "slope", "aspect sine", "aspect cosine",
-                 "forest coverage", "shrubland coverage", "herbaceous coverage", "other landcover",
-                 "precipitation", "wind direction", "wind velocity", "vapor pressure deficit", "min. temperature", "max. temperature", "min. relative humidity", "max. relative humidity")
-cf_func <- function(df, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"), target = c("all", "treated", "overlap"), ps = NA, clus = "Y") {
-  if (outcome == "total_pop") {
-    Y <- df$log_total_pop 
-  } else if (outcome == "daily_pop") {
-    Y <- df$log_daily_pop 
-  } else if (outcome == "km2_pop") {
-    Y <- df$log_km2_pop
+cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"), target = c("all", "treated", "overlap"), ps = NA, clus = "Y") {
+  if (outcome == "km2_pop") {
+    Y <- df$km2_pop_smokePM 
   } else if (outcome == "km2") {
+    Y <- df$km2_smokePM
+  } else if (outcome == "log_km2_pop") {
+    Y <- df$log_km2_pop
+  } else if (outcome == "log_km2") {
     Y <- df$log_km2
   }
   A <- df$fire # "treatment": fire indicator (denoted as T in manuscript)
   X <- df[,confounders] 
   V <- df[,c("burn severity", confounders)] 
   V_names <- colnames(V)
-  state <- df$state_num
+  cl <- df$state_yr
   
   # Estimate expected outcome model m(v) = E[Y|polygon area, V]
   if (clus == "Y") {
-    Y.forest <- regression_forest(V, Y, clusters = state)
+    Y.forest <- regression_forest(V, Y, clusters = cl)
   } else {
     Y.forest <- regression_forest(V, Y)
   }
@@ -204,7 +205,7 @@ cf_func <- function(df, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"),
   # If propensity scores are not provided, estimate PS model e(x) = E[A|X]
   if (length(ps) == 1) {
     if (clus == "Y") {
-      A.forest <- regression_forest(X, A, clusters = state)
+      A.forest <- regression_forest(X, A, clusters = cl)
     } else {
       A.forest <- regression_forest(X, A)
     }
@@ -215,7 +216,7 @@ cf_func <- function(df, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"),
   
   # Causal forest 
   if (clus == "Y") {
-    cf <- causal_forest(V, Y, A, Y.hat = Y.hat, W.hat = A.hat, clusters = state)
+    cf <- causal_forest(V, Y, A, Y.hat = Y.hat, W.hat = A.hat, clusters = cl)
   } else {
     cf <- causal_forest(V, Y, A, Y.hat = Y.hat, W.hat = A.hat)
   }
@@ -230,17 +231,21 @@ cf_func <- function(df, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"),
 }
 
 # Prescribed fire causal forest
-set.seed(1); pres_km2_pop <- cf_func(df_pres, outcome = "km2_pop", target = "treated")
-set.seed(1); pres_km2 <- cf_func(df_pres, outcome = "km2", target = "treated")
+#set.seed(1); cf_func(df_pres, outcome = "km2_pop", target = "treated")
+#set.seed(1); cf_func(df_pres, outcome = "km2", target = "treated")
+set.seed(1); pres_km2_pop <- cf_func(df_pres, outcome = "log_km2_pop", target = "treated")
+set.seed(1); pres_km2 <- cf_func(df_pres, outcome = "log_km2", target = "treated")
 
 # Wildfire causal forest
-set.seed(1); wild_km2_pop <- cf_func(df_wild, outcome = "km2_pop", target = "treated")
-set.seed(1); wild_km2 <- cf_func(df_wild, outcome = "km2", target = "treated")
+#set.seed(1); cf_func(df_wild, outcome = "km2_pop", target = "treated")
+#set.seed(1); cf_func(df_wild, outcome = "km2", target = "treated")
+set.seed(1); wild_km2_pop <- cf_func(df_wild, outcome = "log_km2_pop", target = "treated")
+set.seed(1); wild_km2 <- cf_func(df_wild, outcome = "log_km2", target = "treated")
 
 
 # Variable importance -------------------------------------------------------------------
 
-# Prescribed fires per km^2 smoke severity (person mu*g/m^3)
+# Prescribed fires population smoke exposure (person mu*g/m^3)
 keep <- order(pres_km2_pop$var_imp, decreasing = T)
 keep_var <- pres_km2_pop$var[keep]
 keep_varimp <- pres_km2_pop$var_imp[keep]
@@ -250,25 +255,13 @@ pres_km2_pop_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, 
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
-  ggtitle(expression(paste("Per ", km^{2}, " smoke severity (person ", mu*g/m^3, ")"))) +
-  theme(plot.title = element_text(size = 7), axis.title = element_text(size = 7),
-        axis.text = element_text(size = 7)) 
+  labs(title = "Prescribed fires", subtitle = expression(paste("Population smoke exposure per ", km^{2}))) +
+  theme(axis.title = element_text(size = 9),
+        axis.text = element_text(size = 9),
+        plot.title = element_text(size = 11),
+        plot.subtitle = element_text(size = 9))
 
-# Prescribed fires per km^2 smoke severity (mu*g/m^3)
-keep <- order(pres_km2$var_imp, decreasing = T)
-keep_var <- pres_km2$var[keep]
-keep_varimp <- pres_km2$var_imp[keep]
-d <- tibble(var = keep_var, varimp = keep_varimp)
-pres_km2_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, varimp))) +
-  geom_bar(stat = "identity", fill = "steelblue") + 
-  theme_minimal() +
-  xlab("variable importance") +
-  ylab("") +
-  ggtitle(expression(paste("Per ", km^{2}, " smoke severity (", mu*g/m^3, ")"))) +
-  theme(plot.title = element_text(size = 7), axis.title = element_text(size = 7),
-        axis.text = element_text(size = 7)) 
-
-# Wildfires per km^2 smoke severity (person mu*g/m^3)
+# Wildfires population smoke exposure (person mu*g/m^3)
 keep <- order(wild_km2_pop$var_imp, decreasing = T)
 keep_var <- wild_km2_pop$var[keep]
 keep_varimp <- wild_km2_pop$var_imp[keep]
@@ -278,11 +271,32 @@ wild_km2_pop_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, 
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
-  ggtitle(expression(paste("Per ", km^{2}, " smoke severity (person ", mu*g/m^3, ")"))) +
-  theme(plot.title = element_text(size = 7), axis.title = element_text(size = 7),
-        axis.text = element_text(size = 7)) 
+  labs(title = "Wildfires", subtitle = expression(paste("Population smoke exposure per ", km^{2}))) +
+  theme(axis.title = element_text(size = 9),
+        axis.text = element_text(size = 9),
+        plot.title = element_text(size = 11),
+        plot.subtitle = element_text(size = 9))
 
-# Wildfires per km^2 smoke severity (mu*g/m^3)
+varimp_pop <- pres_km2_pop_varimp | wild_km2_pop_varimp
+ggsave("figures/varimp_pop.pdf", varimp_pop, width = 18, height = 10, units = "cm")
+  
+# Prescribed fires area smoke exposure (mu*g/m^3)
+keep <- order(pres_km2$var_imp, decreasing = T)
+keep_var <- pres_km2$var[keep]
+keep_varimp <- pres_km2$var_imp[keep]
+d <- tibble(var = keep_var, varimp = keep_varimp)
+pres_km2_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, varimp))) +
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  theme_minimal() +
+  xlab("variable importance") +
+  ylab("") +
+  labs(title = "Prescribed fires", subtitle = expression(paste("Area smoke exposure per ", km^{2}))) +
+  theme(axis.title = element_text(size = 9),
+        axis.text = element_text(size = 9),
+        plot.title = element_text(size = 11),
+        plot.subtitle = element_text(size = 9))
+
+# Wildfires area smoke exposure (mu*g/m^3)
 keep <- order(wild_km2$var_imp, decreasing = T)
 keep_var <- wild_km2$var[keep]
 keep_varimp <- wild_km2$var_imp[keep]
@@ -292,89 +306,301 @@ wild_km2_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, vari
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
-  ggtitle(expression(paste("Per ", km^{2}, " smoke severity (", mu*g/m^3, ")"))) +
-  theme(plot.title = element_text(size = 7), axis.title = element_text(size = 7),
-        axis.text = element_text(size = 7)) 
+  labs(title = "Wildfires", subtitle = expression(paste("Area smoke exposure per ", km^{2}))) +
+  theme(axis.title = element_text(size = 9),
+        axis.text = element_text(size = 9),
+        plot.title = element_text(size = 11),
+        plot.subtitle = element_text(size = 9))
 
-p1 <- (pres_km2_pop_varimp | pres_km2_varimp) & plot_annotation("(a) Prescribed fires", theme = theme(plot.title = element_text(size = 8)))
-p2 <- (wild_km2_pop_varimp | wild_km2_varimp) & plot_annotation("(b) Wildfires", theme = theme(plot.title = element_text(size = 8)))
-varimp <- wrap_elements(p1) / wrap_elements(p2)
-ggsave("figures/varimp.pdf", varimp, width = 18, height = 18, units = "cm")
+varimp_area <- pres_km2_varimp | wild_km2_varimp
+ggsave("figures/varimp_area.pdf", varimp_area, width = 18, height = 10, units = "cm")
 
 
-# TOC & RATE -----------------------------------------------------------------------------------
-rate <- function(data, outcome = c("total_pop", "daily_pop", "km2_pop", "km2"), target = c("all", "treated", "overlap"), forest, var_rank, sta = c("CA", "FL", "GA")) {
+# TOC curves -----------------------------------------------------------------------------------
+rate <- function(data, forest, var_rank) {
   set.seed(1) 
-  cf_fit <- cf_func(data %>% filter(state == sta), 
-                    outcome = outcome, 
-                    target = target,
-                    ps = forest$cf$W.hat[data$state == sta], # plug in estimated PS from causal forest with 3 states 
-                    clus = "N")
-  rate_est <- rank_average_treatment_effect(cf_fit$cf, 
-                                            -data[data$state == sta, forest$var[order(forest$var_imp, decreasing = T)][var_rank]], # add negative sign if rank units from low to high
-                                            target = "AUTOC",
-                                            subset = (cf_fit$cf$W.hat >= 0.1 & cf_fit$cf$W.hat <= 0.9))
-  return(rate_est)
+  rate_est <- rank_average_treatment_effect(forest$cf, 
+                                            -data[, forest$var[order(forest$var_imp, decreasing = T)][var_rank]], # add negative sign if rank units from low to high
+                                            target = "AUTOC")
+  return(list(rate_est = rate_est,
+              CI_l = rate_est$estimate - 1.96*rate_est$std.err,
+              CI_u = rate_est$estimate + 1.96*rate_est$std.err))
 }
 
 
-# Prescribed fires (FL)
-pres_km2pop_AUTOC1 <- rate(data = df_pres, target = "treated", outcome = "km2_pop", forest = pres_km2_pop, var_rank = 1, sta = "FL") 
-pres_km2pop_AUTOC2 <- rate(data = df_pres, target = "treated", outcome = "km2_pop", forest = pres_km2_pop, var_rank = 2, sta = "FL") 
-pres_km2_AUTOC1 <- rate(data = df_pres, target = "treated", outcome = "km2", forest = pres_km2, var_rank = 1, sta = "FL") 
-pres_km2_AUTOC2 <- rate(data = df_pres, target = "treated", outcome = "km2", forest = pres_km2, var_rank = 2, sta = "FL") 
-pdf("figures/TOC_plots/FL_pres.pdf", width = 8, height = 8, pointsize = 11)
-  par(mfrow = c(2,2))
-  plot(pres_km2pop_AUTOC1, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(person ", mu*g/m^3, ")")), main = "TOC evaluated on min. relative humidity")
-  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC1$estimate - 1.96*pres_km2pop_AUTOC1$std.err, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC1$estimate + 1.96*pres_km2pop_AUTOC1$std.err, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(a)", side = 3, line = 2, cex = 1.5, adj = -0.1)
-  plot(pres_km2pop_AUTOC2, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(person ", mu*g/m^3, ")")), main = "TOC evaluated on slope")
-  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC2$estimate - 1.96*pres_km2pop_AUTOC2$std.err, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC2$estimate + 1.96*pres_km2pop_AUTOC2$std.err, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(b)", side = 3, line = 2, cex = 1.5, adj = -0.1)
-  plot(pres_km2_AUTOC1, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(", mu*g/m^3, ")")), main = "TOC evaluated on min. relative humidity")
-  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC1$estimate - 1.96*pres_km2_AUTOC1$std.err, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC1$estimate + 1.96*pres_km2_AUTOC1$std.err, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(c)", side = 3, line = 2, cex = 1.5, adj = -0.1)
-  plot(pres_km2_AUTOC2, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(", mu*g/m^3, ")")), main = "TOC evaluated on wind velocity")
-  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC2$estimate - 1.96*pres_km2_AUTOC2$std.err, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC2$estimate + 1.96*pres_km2_AUTOC2$std.err, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(d)", side = 3, line = 2, cex = 1.5, adj = -0.1)
+# Prescribed fire population smoke exposure
+pres_km2pop_AUTOC1 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 1) # CI: 0.17, 0.66 *
+pres_km2pop_AUTOC2 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 2) # CI: -0.72, 0.086
+pres_km2pop_AUTOC3 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 3) # CI: -0.76, 0.11
+pres_km2pop_AUTOC4 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 4) # CI: -0.53, 0.07
+pres_km2pop_AUTOC5 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 5) # CI: -0.09, 0.60
+pres_km2pop_AUTOC6 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 6) # CI: -0.48, 0.24
+pres_km2pop_AUTOC7 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 7) # CI: -0.51, 0.04
+pres_km2pop_AUTOC8 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 8) # CI: 0.0007, 0.24 *
+pres_km2pop_AUTOC9 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 9) # CI: -0.17, 0.42
+pres_km2pop_AUTOC10 <- rate(data = df_pres, forest = pres_km2_pop, var_rank = 10) # CI: -0.02, 0.26
+# main figure
+pdf("figures/TOC_plots/pres_pop_main.pdf", width = 8, height = 5, pointsize = 11)
+  par(mfrow = c(1,2))
+  # min. relative humidity
+  plot(pres_km2pop_AUTOC1$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on min. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC1$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC1$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(a)", side = 3, line = 2, cex = 1.2, adj = -0.23)
+  # precipitation
+  plot(pres_km2pop_AUTOC8$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on precipitation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC8$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC8$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.5)
+  mtext("(b)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+dev.off()
+# supp figure
+pdf("figures/TOC_plots/pres_pop_supp.pdf", width = 7, height = 12, pointsize = 11)
+  par(mfrow = c(5,2))
+  # min. relative humidity
+  plot(pres_km2pop_AUTOC1$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on min. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC1$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC1$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(a)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # slope
+  plot(pres_km2pop_AUTOC2$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on slope")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC2$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC2$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(b)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # elevation
+  plot(pres_km2pop_AUTOC3$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on elevation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC3$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC3$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(c)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # vpd
+  plot(pres_km2pop_AUTOC4$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on vapor pressure deficit")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC4$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC4$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(d)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # other land cover
+  plot(pres_km2pop_AUTOC5$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on other land cover")
+  mtext("(developed, barren, planted/cultivated, wetlands)", side = 3, line = 0.5, cex = 0.7, adj = 0.5)
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC5$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC5$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(e)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # forest coverage
+  plot(pres_km2pop_AUTOC6$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on forest coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC6$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC6$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(f)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # wind direction
+  plot(pres_km2pop_AUTOC7$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on wind direction")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC7$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC7$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(g)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # precipitation
+  plot(pres_km2pop_AUTOC8$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on precipitation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC8$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC8$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.5)
+  mtext("(h)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # min. temperature
+  plot(pres_km2pop_AUTOC9$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on min. temperature")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC9$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC9$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(i)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # herbaceous coverage
+  plot(pres_km2pop_AUTOC10$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on herbaceous coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2pop_AUTOC10$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2pop_AUTOC10$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(j)", side = 3, line = 2, cex = 1.2, adj = -0.1)
 dev.off()
 
-# Wildfires (FL)
-wild_km2pop_AUTOC1 <- rate(data = df_wild, target = "treated", outcome = "km2_pop", forest = wild_km2_pop, var_rank = 1, sta = "FL") 
-wild_km2pop_AUTOC2 <- rate(data = df_wild, target = "treated", outcome = "km2_pop", forest = wild_km2_pop, var_rank = 2, sta = "FL") 
-wild_km2_AUTOC1 <- rate(data = df_wild, target = "treated", outcome = "km2", forest = wild_km2, var_rank = 1, sta = "FL") 
-wild_km2_AUTOC2 <- rate(data = df_wild, target = "treated", outcome = "km2", forest = wild_km2, var_rank = 2, sta = "FL") 
-pdf("figures/TOC_plots/FL_wild.pdf", width = 8, height = 8, pointsize = 11)
-  par(mfrow = c(2,2))
-  plot(wild_km2pop_AUTOC1, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(person ", mu*g/m^3, ")")), main = "TOC evaluated on forest coverage")
-  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC1$estimate - 1.96*wild_km2pop_AUTOC1$std.err, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC1$estimate + 1.96*wild_km2pop_AUTOC1$std.err, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(a)", side = 3, line = 2, cex = 1.5, adj = -0.1)
-  plot(wild_km2pop_AUTOC2, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(person ", mu*g/m^3, ")")), main = "TOC evaluated on vapor pressure deficit")
-  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC2$estimate - 1.96*wild_km2pop_AUTOC2$std.err, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC2$estimate + 1.96*wild_km2pop_AUTOC2$std.err, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(b)", side = 3, line = 2, cex = 1.5, adj = -0.1)
-  plot(wild_km2_AUTOC1 , xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(", mu*g/m^3, ")")), main = "TOC evaluated on forest coverage")
-  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC1$estimate - 1.96*wild_km2_AUTOC1$std.err, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC1$estimate + 1.96*wild_km2_AUTOC1$std.err, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(c)", side = 3, line = 2, cex = 1.5, adj = -0.1)
-  plot(wild_km2_AUTOC2, xlab = "Sampled fraction", ylab = expression(paste("Smoke severity difference in ", "log(", mu*g/m^3, ")")), main = "TOC evaluated on vapor pressure deficit")
-  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC2$estimate - 1.96*wild_km2_AUTOC2$std.err, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC2$estimate + 1.96*wild_km2_AUTOC2$std.err, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
-  mtext("(d)", side = 3, line = 2, cex = 1.5, adj = -0.1)
+# Prescribed fires area smoke exposure
+pres_km2_AUTOC1 <- rate(data = df_pres, forest = pres_km2, var_rank = 1) # CI: 0.08, 0.34 *
+pres_km2_AUTOC2 <- rate(data = df_pres, forest = pres_km2, var_rank = 2) # CI: -0.33, 0.02
+pres_km2_AUTOC3 <- rate(data = df_pres, forest = pres_km2, var_rank = 3) # CI: -0.29, 0.015
+pres_km2_AUTOC4 <- rate(data = df_pres, forest = pres_km2, var_rank = 4) # CI: -0.32, 0.086
+pres_km2_AUTOC5 <- rate(data = df_pres, forest = pres_km2, var_rank = 5) # CI: -0.27, 0.079
+pres_km2_AUTOC6 <- rate(data = df_pres, forest = pres_km2, var_rank = 6) # CI: -0.046, 0.36
+pres_km2_AUTOC7 <- rate(data = df_pres, forest = pres_km2, var_rank = 7) # CI: 0.005, 0.12 *
+pres_km2_AUTOC8 <- rate(data = df_pres, forest = pres_km2, var_rank = 8) # CI: -0.21, 0.10
+pres_km2_AUTOC9 <- rate(data = df_pres, forest = pres_km2, var_rank = 9) # CI: -0.15, 0.20
+pres_km2_AUTOC10 <- rate(data = df_pres, forest = pres_km2, var_rank = 10) # CI: -0.036, 0.25
+# supp figure
+pdf("figures/TOC_plots/pres_area_supp.pdf", width = 7, height = 12, pointsize = 11)
+  par(mfrow = c(5,2))
+  # min. relative humidity
+  plot(pres_km2_AUTOC1$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on min. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC1$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC1$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(a)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # slope
+  plot(pres_km2_AUTOC2$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on slope")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC2$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC2$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(b)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # vpd
+  plot(pres_km2_AUTOC3$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on vapor pressure deficit")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC3$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC3$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(c)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # elevation
+  plot(pres_km2_AUTOC4$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on elevation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC4$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC4$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(d)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # forest coverage
+  plot(pres_km2_AUTOC5$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on forest coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC5$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC5$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(e)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # other land cover
+  plot(pres_km2_AUTOC6$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on other land cover")
+  mtext("(developed, barren, planted/cultivated, wetlands)", side = 3, line = 0.5, cex = 0.7, adj = 0.5)
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC6$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC6$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(f)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # precipitation
+  plot(pres_km2_AUTOC7$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on precipitation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC7$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC7$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.8)
+  mtext("(g)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # wind direction
+  plot(pres_km2_AUTOC8$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on wind direction")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC8$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC8$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(h)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # min. temperature
+  plot(pres_km2_AUTOC9$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on min. temperature")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC9$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC9$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(i)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # max. relative humidity
+  plot(pres_km2_AUTOC10$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on max. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(pres_km2_AUTOC10$CI_l, 3)")), ",", eval(parse(text = "round(pres_km2_AUTOC10$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(j)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+dev.off()
+
+
+# Wildfire population smoke exposure
+wild_km2pop_AUTOC1 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 1) # CI: -1.02, -0.46 *
+wild_km2pop_AUTOC2 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 2) # CI: -0.90, -0.14 * 
+wild_km2pop_AUTOC3 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 3) # CI: -0.59, -0.0016 *
+wild_km2pop_AUTOC4 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 4) # CI: -0.49, 0.18
+wild_km2pop_AUTOC5 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 5) # CI: -0.45, 0.25
+wild_km2pop_AUTOC6 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 6) # CI: -0.39, 0.12
+wild_km2pop_AUTOC7 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 7) # CI: -0.63, -0.059 *
+wild_km2pop_AUTOC8 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 8) # CI: -0.17, 0.22
+wild_km2pop_AUTOC9 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 9) # CI: 0.01, 0.35 *
+wild_km2pop_AUTOC10 <- rate(data = df_wild, forest = wild_km2_pop, var_rank = 10) # CI: -0.06, 0.36
+# supp figure
+pdf("figures/TOC_plots/wild_pop_supp.pdf", width = 7, height = 12, pointsize = 11)
+  par(mfrow = c(5,2))
+  # forest coverage
+  plot(wild_km2pop_AUTOC1$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on forest coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC1$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC1$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(a)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # slope
+  plot(wild_km2pop_AUTOC2$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on slope")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC2$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC2$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(b)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # vpd
+  plot(wild_km2pop_AUTOC3$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on vapor pressure deficit")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC3$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC3$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(c)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # herbaceous coverage
+  plot(wild_km2pop_AUTOC4$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on herbaceous coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC4$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC4$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(d)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # other land cover
+  plot(wild_km2pop_AUTOC5$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on other land cover")
+  mtext("(developed, barren, planted/cultivated, wetlands)", side = 3, line = 0.5, cex = 0.7, adj = 0.5)
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC5$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC5$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(e)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # shrubland coverage
+  plot(wild_km2pop_AUTOC6$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on shrubland coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC6$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC6$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(f)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # elevation
+  plot(wild_km2pop_AUTOC7$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on elevation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC7$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC7$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(g)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # aspect sine
+  plot(wild_km2pop_AUTOC8$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on aspect sine")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC8$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC8$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(h)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # min. relative humidity
+  plot(wild_km2pop_AUTOC9$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on min. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC9$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC9$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(i)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # wind direction
+  plot(wild_km2pop_AUTOC10$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in population smoke exposure per ", km^2)), main = "TOC evaluated on wind direction")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2pop_AUTOC10$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2pop_AUTOC10$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(j)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+dev.off()
+
+# Wildfire area smoke exposure
+wild_km2_AUTOC1 <- rate(data = df_wild, forest = wild_km2, var_rank = 1) 
+wild_km2_AUTOC2 <- rate(data = df_wild, forest = wild_km2, var_rank = 2) 
+wild_km2_AUTOC3 <- rate(data = df_wild, forest = wild_km2, var_rank = 3) 
+wild_km2_AUTOC4 <- rate(data = df_wild, forest = wild_km2, var_rank = 4) 
+wild_km2_AUTOC5 <- rate(data = df_wild, forest = wild_km2, var_rank = 5) 
+wild_km2_AUTOC6 <- rate(data = df_wild, forest = wild_km2, var_rank = 6)  
+wild_km2_AUTOC7 <- rate(data = df_wild, forest = wild_km2, var_rank = 7)  
+wild_km2_AUTOC8 <- rate(data = df_wild, forest = wild_km2, var_rank = 8)  
+wild_km2_AUTOC9 <- rate(data = df_wild, forest = wild_km2, var_rank = 9)  
+wild_km2_AUTOC10 <- rate(data = df_wild, forest = wild_km2, var_rank = 10)  
+# supp figure
+pdf("figures/TOC_plots/wild_area_supp.pdf", width = 7, height = 12, pointsize = 11)
+  par(mfrow = c(5,2))
+  # forest coverage
+  plot(wild_km2_AUTOC1$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on forest coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC1$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC1$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(a)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # elevation
+  plot(wild_km2_AUTOC2$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on elevation")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC2$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC2$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(b)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # slope
+  plot(wild_km2_AUTOC3$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on slope")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC3$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC3$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(c)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # vpd
+  plot(wild_km2_AUTOC4$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on vapor pressure deficit")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC4$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC4$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(d)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # max. relative humidity
+  plot(wild_km2_AUTOC5$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on max. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC5$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC5$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(e)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # other land cover
+  plot(wild_km2_AUTOC6$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on other land cover")
+  mtext("(developed, barren, planted/cultivated, wetlands)", side = 3, line = 0.5, cex = 0.7, adj = 0.5)
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC6$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC6$CI_u, 3)")),"]"), side = 3, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(f)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # max temp
+  plot(wild_km2_AUTOC7$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on max. temperature")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC7$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC7$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(g)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # herbaceous coverage
+  plot(wild_km2_AUTOC8$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on herbaceous coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC8$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC8$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(h)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # min. relative humidity
+  plot(wild_km2_AUTOC9$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on min. relative humidity")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC9$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC9$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(i)", side = 3, line = 2, cex = 1.2, adj = -0.1)
+  # shrubland coverage
+  plot(wild_km2_AUTOC10$rate_est, xlab = "Sampled fraction", ylab = expression(paste("Difference in area smoke exposure per ", km^2)), main = "TOC evaluated on shrubland coverage")
+  mtext(paste("95% CI: [", eval(parse(text = "round(wild_km2_AUTOC10$CI_l, 3)")), ",", eval(parse(text = "round(wild_km2_AUTOC10$CI_u, 3)")),"]"), side = 1, line = -2, cex = 0.7, adj = 0.9)
+  mtext("(j)", side = 3, line = 2, cex = 1.2, adj = -0.1)
 dev.off()
 
 
 # Comparisons between prescribed and wildfires -----------------------------------------------
 # E[Y|pres, V = overall median] - E[Y|wild, V = overall median]
+# Y: population smoke exposure
 V_pres <- V_wild <- matrix(apply(df_all[df_all$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
 pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
 pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
 (exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
 ((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
   c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
+# Y: area smoke exposure
+V_pres <- V_wild <- matrix(apply(df_all[df_all$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
+pred_pres <- predict(pres_km2$cf, V_pres, estimate.variance = TRUE)
+pred_wild <- predict(wild_km2$cf, V_wild, estimate.variance = TRUE) 
+(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
+((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
+  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
 
 # E[Y|pres, V = pres median] - E[Y|wild, V = wild median]
+# Y: population smoke exposure
 V_pres <- matrix(apply(df_pres[df_pres$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
 V_wild <- matrix(apply(df_wild[df_wild$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
 pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
 pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
+(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
+((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
+  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
+# Y: area smoke exposure
+V_pres <- matrix(apply(df_pres[df_pres$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
+V_wild <- matrix(apply(df_wild[df_wild$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
+pred_pres <- predict(pres_km2$cf, V_pres, estimate.variance = TRUE)
+pred_wild <- predict(wild_km2$cf, V_wild, estimate.variance = TRUE) 
 (exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
 ((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
   c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
