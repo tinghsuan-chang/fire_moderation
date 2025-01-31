@@ -16,6 +16,11 @@ df <- dat %>%
     fire_type == "Unknown" ~ NA
   )) %>% 
   mutate(fire = 1) %>% # fire indicator (1: fire, 0: no fire)
+  mutate(state_num = case_when(
+    state == "CA" ~ 0,
+    state == "FL" ~ 1,
+    state == "GA" ~ 2
+  )) %>%
   mutate(yr = lubridate::year(ig_date)) %>%
   mutate(state_yr = as.factor(paste0(state, yr))) %>%
   mutate(duration = FDate - IDate) %>%
@@ -41,7 +46,13 @@ df <- dat %>%
          `min. temperature` = tmmn,
          `max. temperature` = tmmx,
          `min. relative humidity` = rmin,
-         `max. relative humidity` = rmax)
+         `max. relative humidity` = rmax) %>%
+  # log transform smoke exposure: log(y+1)
+  mutate(log_total_pop = log(total_pop_smokePM + 1),
+         log_total = log(total_smokePM + 1),
+         log_daily_pop = log(daily_pop_smokePM + 1),
+         log_km2_pop = log(km2_pop_smokePM + 1),
+         log_km2 = log(km2_smokePM + 1))
 df <- df[complete.cases(df),] %>%
   filter(`burn severity` != 6)
 
@@ -70,14 +81,6 @@ df_all[1:(nrow(df_all)/2),]$total_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$daily_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_smokePM <- rep(0, nrow(df_all)/2)
-
-# Log transform smoke exposure: log(y+1)
-df_all <- df_all %>%
-  mutate(log_total_pop = log(total_pop_smokePM + 1),
-         log_total = log(total_smokePM + 1),
-         log_daily_pop = log(daily_pop_smokePM + 1),
-         log_km2_pop = log(km2_pop_smokePM + 1),
-         log_km2 = log(km2_smokePM + 1))
 
 df_pres <- df_all %>% filter(fire_type == "Prescribed Fire")
 df_wild <- df_all %>% filter(fire_type == "Wildfire")
@@ -164,10 +167,11 @@ df %>%
             min_area = min(polygon_area)/10^6,
             max_area = max(polygon_area)/10^6)
 
-# Topography, climate and land cover variables by fire type
+# Topography, climate and land cover by fire type
 base <- table1(~ elevation + slope + `aspect sine` + `aspect cosine` + 
                  `precipitation` + `wind direction` + `wind velocity` + `vapor pressure deficit` + `min. temperature` + `max. temperature` + `min. relative humidity` + `max. relative humidity` +  
-                 `forest coverage` + `shrubland coverage` + `herbaceous coverage`| fire_type, data = df)
+                 `forest coverage` + `shrubland coverage` + `herbaceous coverage`| fire_type, 
+               data = df, render.continuous = c(.="Median [Min, Max]"))
 writeLines(t1kable(base, format = "latex"), "tables/base.tex") # need to make some tweaks to .tex to make it look better 
 
 # Burn severity by fire type
@@ -194,7 +198,7 @@ cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"),
   V_names <- colnames(V)
   cl <- df$state_yr
   
-  # Estimate expected outcome model m(v) = E[Y|polygon area, V]
+  # Estimate expected outcome model m(v) = E[Y|V]
   if (clus == "Y") {
     Y.forest <- regression_forest(V, Y, clusters = cl)
   } else {
@@ -571,36 +575,26 @@ dev.off()
 
 
 # Comparisons between prescribed and wildfires -----------------------------------------------
-# E[Y|pres, V = overall median] - E[Y|wild, V = overall median]
-# Y: population smoke exposure
-V_pres <- V_wild <- matrix(apply(df_all[df_all$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
-pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
-pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
-((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
-# Y: area smoke exposure
-V_pres <- V_wild <- matrix(apply(df_all[df_all$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
-pred_pres <- predict(pres_km2$cf, V_pres, estimate.variance = TRUE)
-pred_wild <- predict(wild_km2$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
-((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
+Y <- df$km2_pop_smokePM # population smoke exposure 
+A <- df$fire_type_bin # fire type (1: prescribed fire, 0: wildfire)
+X <- df[,c("state_num", confounders)] # add state to account for unmeasured state-level differences
+V <- df[,c("burn severity", "state_num", confounders)] 
+cl <- df$state_yr
+set.seed(1)
+Y.forest <- regression_forest(V, Y, clusters = cl)
+Y.hat <- predict(Y.forest)$predictions
+A.forest <- regression_forest(X, A, clusters = cl)
+A.hat <- predict(A.forest)$predictions
+cf <- causal_forest(V, Y, A, Y.hat = Y.hat, W.hat = A.hat, clusters = cl)
+ate <- average_treatment_effect(cf, target.sample = "overlap") 
+ate[1] + c(-1,1)*1.96*ate[2]
 
-# E[Y|pres, V = pres median] - E[Y|wild, V = wild median]
-# Y: population smoke exposure
-V_pres <- matrix(apply(df_pres[df_pres$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
-V_wild <- matrix(apply(df_wild[df_wild$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
-pred_pres <- predict(pres_km2_pop$cf, V_pres, estimate.variance = TRUE)
-pred_wild <- predict(wild_km2_pop$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
-((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
-# Y: area smoke exposure
-V_pres <- matrix(apply(df_pres[df_pres$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
-V_wild <- matrix(apply(df_wild[df_wild$fire == 1, c("burn severity", confounders)], 2, median), nrow = 1)
-pred_pres <- predict(pres_km2$cf, V_pres, estimate.variance = TRUE)
-pred_wild <- predict(wild_km2$cf, V_wild, estimate.variance = TRUE) 
-(exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1) 
-((exp(pred_pres$predictions)-1) - (exp(pred_wild$predictions)-1)) + 
-  c(-1,1)*1.96*sqrt(pred_pres$variance.estimates*exp(2*pred_pres$predictions) + pred_wild$variance.estimates*exp(2*pred_wild$predictions)) 
+Y <- df$km2_smokePM # area smoke exposure 
+set.seed(1)
+Y.forest <- regression_forest(V, Y, clusters = cl)
+Y.hat <- predict(Y.forest)$predictions
+A.forest <- regression_forest(X, A, clusters = cl)
+A.hat <- predict(A.forest)$predictions
+cf <- causal_forest(V, Y, A, Y.hat = Y.hat, W.hat = A.hat, clusters = cl)
+ate <- average_treatment_effect(cf, target.sample = "overlap") 
+ate[1] + c(-1,1)*1.96*ate[2]
