@@ -16,11 +16,8 @@ df <- dat %>%
     fire_type == "Unknown" ~ NA
   )) %>% 
   mutate(fire = 1) %>% # fire indicator (1: fire, 0: no fire)
-  mutate(state_num = case_when(
-    state == "CA" ~ 0,
-    state == "FL" ~ 1,
-    state == "GA" ~ 2
-  )) %>%
+  mutate(CA_ind = ifelse(state == "CA", 1, 0),
+         FL_ind = ifelse(state == "FL", 1, 0)) %>%
   mutate(yr = lubridate::year(ig_date)) %>%
   mutate(state_yr = as.factor(paste0(state, yr))) %>%
   mutate(duration = FDate - IDate) %>%
@@ -81,6 +78,8 @@ df_all[1:(nrow(df_all)/2),]$total_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$daily_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_pop_smokePM <- rep(0, nrow(df_all)/2)
 df_all[1:(nrow(df_all)/2),]$km2_smokePM <- rep(0, nrow(df_all)/2)
+df_all[1:(nrow(df_all)/2),]$log_km2_pop <- rep(0, nrow(df_all)/2)
+df_all[1:(nrow(df_all)/2),]$log_km2 <- rep(0, nrow(df_all)/2)
 
 df_pres <- df_all %>% filter(fire_type == "Prescribed Fire")
 df_wild <- df_all %>% filter(fire_type == "Wildfire")
@@ -182,7 +181,7 @@ df %>%
 
 
 # Causal forest -------------------------------------------------------------------------
-cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"), target = c("all", "treated", "overlap"), ps = NA, clus = "Y") {
+cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"), target = "treated", ps = NA, clus = "Y") {
   if (outcome == "km2_pop") {
     Y <- df$km2_pop_smokePM 
   } else if (outcome == "km2") {
@@ -194,7 +193,7 @@ cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"),
   }
   A <- df$fire # "treatment": fire indicator (denoted as T in manuscript)
   X <- df[,confounders] 
-  V <- df[,c("burn severity", confounders)] 
+  V <- df[,c("burn severity",confounders)] 
   V_names <- colnames(V)
   cl <- df$state_yr
   
@@ -225,7 +224,6 @@ cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"),
     cf <- causal_forest(V, Y, A, Y.hat = Y.hat, W.hat = A.hat)
   }
   varimp <- variable_importance(cf)  
-  #ate <- average_treatment_effect(cf, subset = (A.hat >= 0.1 & A.hat <= 0.9)) 
   ate <- average_treatment_effect(cf, target.sample = target) 
   
   return(list(cf = cf, 
@@ -235,16 +233,16 @@ cf_func <- function(df, outcome = c("km2_pop", "km2", "log_km2_pop", "log_km2"),
 }
 
 # Prescribed fire causal forest
-#set.seed(1); cf_func(df_pres, outcome = "km2_pop", target = "treated")
-#set.seed(1); cf_func(df_pres, outcome = "km2", target = "treated")
-set.seed(1); pres_km2_pop <- cf_func(df_pres, outcome = "log_km2_pop", target = "treated")
-set.seed(1); pres_km2 <- cf_func(df_pres, outcome = "log_km2", target = "treated")
+#set.seed(1); cf_func(df_pres, outcome = "km2_pop")
+#set.seed(1); cf_func(df_pres, outcome = "km2")
+set.seed(1); pres_km2_pop <- cf_func(df_pres, outcome = "log_km2_pop")
+set.seed(1); pres_km2 <- cf_func(df_pres, outcome = "log_km2")
 
 # Wildfire causal forest
-#set.seed(1); cf_func(df_wild, outcome = "km2_pop", target = "treated")
-#set.seed(1); cf_func(df_wild, outcome = "km2", target = "treated")
-set.seed(1); wild_km2_pop <- cf_func(df_wild, outcome = "log_km2_pop", target = "treated")
-set.seed(1); wild_km2 <- cf_func(df_wild, outcome = "log_km2", target = "treated")
+#set.seed(1); cf_func(df_wild, outcome = "km2_pop")
+#set.seed(1); cf_func(df_wild, outcome = "km2")
+set.seed(1); wild_km2_pop <- cf_func(df_wild, outcome = "log_km2_pop")
+set.seed(1); wild_km2 <- cf_func(df_wild, outcome = "log_km2")
 
 
 # Variable importance -------------------------------------------------------------------
@@ -577,8 +575,8 @@ dev.off()
 # Comparisons between prescribed and wildfires -----------------------------------------------
 Y <- df$km2_pop_smokePM # population smoke exposure 
 A <- df$fire_type_bin # fire type (1: prescribed fire, 0: wildfire)
-X <- df[,c("state_num", confounders)] # add state to account for unmeasured state-level differences
-V <- df[,c("burn severity", "state_num", confounders)] 
+X <- df[,c("CA_ind", "FL_ind", confounders)] # add state to account for unmeasured state-level differences
+V <- df[,c("burn severity", "CA_ind", "FL_ind", confounders)] 
 cl <- df$state_yr
 set.seed(1)
 Y.forest <- regression_forest(V, Y, clusters = cl)
