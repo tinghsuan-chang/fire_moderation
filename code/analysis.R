@@ -252,70 +252,70 @@ keep <- order(pres_km2_pop$var_imp, decreasing = T)
 keep_var <- pres_km2_pop$var[keep]
 keep_varimp <- pres_km2_pop$var_imp[keep]
 d <- tibble(var = keep_var, varimp = keep_varimp)
-pres_km2_pop_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, varimp))) +
+pres_km2_pop_varimp <- ggplot(data = d[1:5,], aes(x = varimp, y = reorder(var, varimp))) +
   geom_bar(stat = "identity", fill = "steelblue") + 
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
   labs(title = "Prescribed fires", subtitle = expression(paste("Population smoke exposure per ", km^{2}))) +
-  theme(axis.title = element_text(size = 9),
-        axis.text = element_text(size = 9),
-        plot.title = element_text(size = 11),
-        plot.subtitle = element_text(size = 9))
+  theme(axis.title = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        plot.title = element_text(size = 10),
+        plot.subtitle = element_text(size = 8))
 
 # Wildfires population smoke exposure (person mu*g/m^3)
 keep <- order(wild_km2_pop$var_imp, decreasing = T)
 keep_var <- wild_km2_pop$var[keep]
 keep_varimp <- wild_km2_pop$var_imp[keep]
 d <- tibble(var = keep_var, varimp = keep_varimp)
-wild_km2_pop_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, varimp))) +
+wild_km2_pop_varimp <- ggplot(data = d[1:5,], aes(x = varimp, y = reorder(var, varimp))) +
   geom_bar(stat = "identity", fill = "steelblue") + 
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
   labs(title = "Wildfires", subtitle = expression(paste("Population smoke exposure per ", km^{2}))) +
-  theme(axis.title = element_text(size = 9),
-        axis.text = element_text(size = 9),
-        plot.title = element_text(size = 11),
-        plot.subtitle = element_text(size = 9))
+  theme(axis.title = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        plot.title = element_text(size = 10),
+        plot.subtitle = element_text(size = 8))
 
 varimp_pop <- pres_km2_pop_varimp | wild_km2_pop_varimp
-ggsave("figures/varimp_pop.pdf", varimp_pop, width = 18, height = 10, units = "cm")
+ggsave("figures/varimp_pop.pdf", varimp_pop, width = 16, height = 6, units = "cm")
   
 # Prescribed fires area smoke exposure (mu*g/m^3)
 keep <- order(pres_km2$var_imp, decreasing = T)
 keep_var <- pres_km2$var[keep]
 keep_varimp <- pres_km2$var_imp[keep]
 d <- tibble(var = keep_var, varimp = keep_varimp)
-pres_km2_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, varimp))) +
+pres_km2_varimp <- ggplot(data = d[1:5,], aes(x = varimp, y = reorder(var, varimp))) +
   geom_bar(stat = "identity", fill = "steelblue") + 
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
   labs(title = "Prescribed fires", subtitle = expression(paste("Area smoke exposure per ", km^{2}))) +
-  theme(axis.title = element_text(size = 9),
-        axis.text = element_text(size = 9),
-        plot.title = element_text(size = 11),
-        plot.subtitle = element_text(size = 9))
+  theme(axis.title = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        plot.title = element_text(size = 10),
+        plot.subtitle = element_text(size = 8))
 
 # Wildfires area smoke exposure (mu*g/m^3)
 keep <- order(wild_km2$var_imp, decreasing = T)
 keep_var <- wild_km2$var[keep]
 keep_varimp <- wild_km2$var_imp[keep]
 d <- tibble(var = keep_var, varimp = keep_varimp)
-wild_km2_varimp <- ggplot(data = d[1:10,], aes(x = varimp, y = reorder(var, varimp))) +
+wild_km2_varimp <- ggplot(data = d[1:5,], aes(x = varimp, y = reorder(var, varimp))) +
   geom_bar(stat = "identity", fill = "steelblue") + 
   theme_minimal() +
   xlab("variable importance") +
   ylab("") +
   labs(title = "Wildfires", subtitle = expression(paste("Area smoke exposure per ", km^{2}))) +
-  theme(axis.title = element_text(size = 9),
-        axis.text = element_text(size = 9),
-        plot.title = element_text(size = 11),
-        plot.subtitle = element_text(size = 9))
+  theme(axis.title = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        plot.title = element_text(size = 10),
+        plot.subtitle = element_text(size = 8))
 
 varimp_area <- pres_km2_varimp | wild_km2_varimp
-ggsave("figures/varimp_area.pdf", varimp_area, width = 18, height = 10, units = "cm")
+ggsave("figures/varimp_area.pdf", varimp_area, width = 16, height = 6, units = "cm")
 
 
 # TOC curves -----------------------------------------------------------------------------------
